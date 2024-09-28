@@ -18,6 +18,7 @@ def extract_raw(sub_id, folder_path):
     for root, dirs, files in os.walk(folder_path):
         for filename in files:
             # Check if the file ends with 'sample.csv'
+            # change this if doing coordinate interpolation too
             if filename.endswith("Sample_Interpolated.csv"):
                 file_path = os.path.join(root, filename)
                 # Read the CSV file into a DataFrame
@@ -88,12 +89,18 @@ def extract_raw(sub_id, folder_path):
             
     
         # truncate the sample table
-        #end_ind = df_sample.index[df_sample['tSample'] == sample_end][0]
-        #df_sample_trunc = df_sample.iloc[:end_ind]
+        # find closest index to end index if exact match isnt found
+        end_ind = df_sample.index[df_sample['tSample'] == sample_end]
+        if not end_ind.empty:
+            end_ind = end_ind[0]
+        else:
+            end_ind = (df_sample["tSample"] - sample_end).abs().idxmin()
+            
+        df_sample_trunc = df_sample.iloc[:end_ind]
     
         #df_sample_trunc.to_csv(f'{sub_id}.csv')
         
-        # concat current DF with full DF
-        df_all_samples = pd.concat([df_all_samples, df_sample])
+        # concat current DF (trunc) with full DF
+        df_all_samples = pd.concat([df_all_samples, df_sample_trunc])
     # write full DF to CSV
-    df_all_samples.to_csv(f'/Volumes/Lexar/MW_Classifier_Data/{sub_id}_raw_interpolated.csv', index=False)
+    df_all_samples.to_csv(f'E:\\MW_Classifier_Data\\{sub_id}_raw_interpolated.csv', index=False)

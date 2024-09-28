@@ -49,8 +49,8 @@ def load_raw_samples(data_path, subjects):
         # get subject df
         print(f"Loading subject {subject_num}")
         # change file path depending on if you want to load interpolated data files or not
-        #df = pd.read_csv(f"{data_path}{subject_num}_raw_interpolated.csv", dtype={11:str})
-        df = pd.read_csv(f"{data_path}{subject_num}_raw.csv", dtype={10:str})
+        df = pd.read_csv(f"{data_path}{subject_num}_raw_interpolated.csv", dtype={11:str})
+        #df = pd.read_csv(f"{data_path}{subject_num}_raw.csv", dtype={10:str})
         # add subject id column to ensure even distribution when shuffling later for model
         df["Subject"] = f"{subject_num}"
         # add subject df to df list
@@ -177,7 +177,7 @@ def interpolate_pupil_over_blinks(dfSamples, dfBlink, subject_num, run):
     LPupil = np.array(this_sub_run_samples['LPupil'])
     RPupil = np.array(this_sub_run_samples['RPupil'])
     # declare blink offset: 50ms added to the start and end of a blink
-    blink_off = 50
+    blink_off = 100 # changed to 100
     
     # declare variables to store blink start information to merge blinks if 
     # they are too close 
@@ -290,7 +290,7 @@ def interpolate_pupil_over_blinks(dfSamples, dfBlink, subject_num, run):
                     dfSamples.loc[this_sub_run_samples.index[mask], "RPupil"] = interp_Rpupil
 
                     
-    dfSamples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject}/s{subject_str[-3:]}_r{run}_Sample_Interpolated.csv")
+    dfSamples.to_csv(f"E:\\CSV_Samples\\{subject}\\s{subject_str[-3:]}_r{run}_Sample_Interpolated.csv")
     
 def interpolate_coordinates_over_blinks(dfSamples, dfBlink, subject_num, run):
     """
@@ -336,7 +336,8 @@ def interpolate_coordinates_over_blinks(dfSamples, dfBlink, subject_num, run):
     RX = np.array(this_sub_run_samples['RX'])
     RY = np.array(this_sub_run_samples['RY'])
     # declare blink offset: 50ms added to the start and end of a blink
-    blink_off = 50
+    # changed to 100
+    blink_off = 100
     
     # declare variables to store blink start information to merge blinks if 
     # they are too close 
@@ -409,6 +410,14 @@ def interpolate_coordinates_over_blinks(dfSamples, dfBlink, subject_num, run):
                     # generate the spl model using the time and pupil size
                     spl_LX = CubicSpline(x, y_LX)
                     spl_LY = CubicSpline(x, y_LY)
+                    
+                    mask = (sample_time > t2) & (sample_time <t3)
+                    x = sample_time[mask]
+                    interp_LX = spl_LX(x)
+                    interp_LY = spl_LY(x)
+                    # update
+                    dfSamples.loc[this_sub_run_samples.index[mask], "LX"] = interp_LX
+                    dfSamples.loc[this_sub_run_samples.index[mask], "LY"] = interp_LY
                 else:
                     print(f"Non-finite values found for Left Eye. Skipping blink at index {index}.")
                     valid_interpolation = False
@@ -432,42 +441,21 @@ def interpolate_coordinates_over_blinks(dfSamples, dfBlink, subject_num, run):
                     # generate the spl model using the time and pupil size
                     spl_RX = CubicSpline(x, y_RX)
                     spl_RY = CubicSpline(x, y_RY)
-            if valid_interpolation and np.all(np.isfinite(RX[y_ind_RX])) and np.all(np.isfinite(RY[y_ind_RY])):
-                # generate mask for blink duration
-                mask = (sample_time > t2) & (sample_time < t3)
-                # Print values before the update
-                indices_to_update = this_sub_run_samples.index[mask]
-                #print("Values before update (LPupil):")
-                #print(dfSamples.loc[indices_to_update, "LPupil"])
-                x = sample_time[mask]
-                # use spl model to interpolate pupil size for blink duration
-                # do for each pupil
-                if row["eye"] == "L":
-                    interp_LX = spl_LX(x)
-                    interp_LY = spl_LY(x)
-                if row["eye"] == "R":
+                    
+                    mask = (sample_time > t2) & (sample_time <t3)
+                    x = sample_time[mask]
                     interp_RX = spl_RX(x)
                     interp_RY = spl_RY(x)
+                    # update
+                    dfSamples.loc[this_sub_run_samples.index[mask], "RX"] = interp_RX
+                    dfSamples.loc[this_sub_run_samples.index[mask], "RY"] = interp_RY
+          
             else:
                 print(f"Non-finite values found for Right Eye. Skipping blink at index {index}.")
                 valid_interpolation = False
-            if valid_interpolation:  
-                # update the df for this subject and run
-                # Update dfSamples directly within the loop
-                if row["eye"] == "L":
-                    #print(f"Updating indices: {this_sub_run_samples.index[mask]}")
-                    dfSamples.loc[this_sub_run_samples.index[mask], "LX"] = interp_LX
-                    dfSamples.loc[this_sub_run_samples.index[mask], "LY"] = interp_LY
-                    # Print values after the update
-                    #print("Values after update (LPupil):")
-                    #print(dfSamples.loc[indices_to_update, "LPupil"])
-                if row["eye"] == "R":
-                    #print(f"Updating indices: {this_sub_run_samples.index[mask]}")
-                    dfSamples.loc[this_sub_run_samples.index[mask], "RX"] = interp_RX
-                    dfSamples.loc[this_sub_run_samples.index[mask], "RY"] = interp_RY
 
                 
-    dfSamples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject}/s{subject_str[-3:]}_r{run}_Sample_Interpolated.csv")
+    dfSamples.to_csv(f"E:\\CSV_Samples\\{subject}\\s{subject_str[-3:]}_r{run}_Sample_Interpolated_Pupil_Coord.csv")
 
 def preprocess(dfSamples):
     """
@@ -494,6 +482,9 @@ def preprocess(dfSamples):
     dfSamples['tSample_normalized'] = dfSamples.groupby(['Subject',
                                                        'run_num'])['tSample'].transform(lambda x: x - x.min())
     print("tSample_normalized has been created.")
+    
+    # normalize pupils
+    dfSamples = normalize_pupil(dfSamples)
     return dfSamples
 
 def correlation_heatmap(dfSamples):
@@ -512,7 +503,7 @@ def correlation_heatmap(dfSamples):
     None
     """
     # get rid of subject and sample id
-    data = dfSamples[["tSample", "tSample_normalized", "RX", "RY", "RPupil", "LX", "LY", "LPupil", "page_num", "run_num", "is_MW"]]
+    data = dfSamples[["tSample", "tSample_normalized", "RX", "RY", "RPupil_normalized", "LX", "LY", "LPupil_normalized", "page_num", "run_num", "is_MW"]]
     
     corr_matrix = data.corr()
     
@@ -595,7 +586,7 @@ def mw_over_time(dfSamples):
 
 def pupil_over_time(dfSamples):
     """
-    Generates a line plot of the pupil dilation over time, averaged over subjects
+    Generates a line plot of the normalized pupil dilation over time, averaged over subjects
     and runs. The line plot is then saved to the plots folder within the current
     working directory.
 
@@ -609,9 +600,9 @@ def pupil_over_time(dfSamples):
     None
     """
     
-    LPupil_over_time = dfSamples.groupby("tSample_normalized")["LPupil"].mean()
+    LPupil_over_time = dfSamples.groupby("tSample_normalized")["LPupil_normalized"].mean()
     
-    RPupil_over_time = dfSamples.groupby("tSample_normalized")["RPupil"].mean()
+    RPupil_over_time = dfSamples.groupby("tSample_normalized")["RPupil_normalized"].mean()
     
     plt.figure(figsize=(10, 6))
     plt.plot(LPupil_over_time.index, LPupil_over_time.values, label="Left Pupil")
@@ -628,7 +619,7 @@ def pupil_over_time(dfSamples):
 def pupil_subject_run(dfSamples, subjects):
     """
     Generates one plot for each subject with subplots for each run. Each subplot
-    shows the pupil dilation over time for that subject and run. Each plot is 
+    shows the normalized pupil dilation over time for that subject and run. Each plot is 
     saved to the plots folder within the current working directory.
     
     Parameters
@@ -648,13 +639,13 @@ def pupil_subject_run(dfSamples, subjects):
         fig.suptitle(f"Pupil Dilation for Subject {subject_num}")
         axes = axes.flatten()
         for run_num in range(1,6): # 5 runs for each subject
-            this_sub_run_df = dfSamples[(dfSamples["Subject"] == str(subject_num)) &
+            this_sub_run_df = dfSamples[(dfSamples["Subject"] == subject_num) &
                                        (dfSamples["run_num"] == float(run_num))]
             # plot pupil dilation for this subject and run
             axes[run_num-1].plot(this_sub_run_df["tSample_normalized"],
-                               this_sub_run_df["LPupil"], label="Left Pupil")
+                               this_sub_run_df["LPupil_normalized"], label="Left Pupil")
             axes[run_num-1].plot(this_sub_run_df["tSample_normalized"],
-                               this_sub_run_df["RPupil"], alpha = .4, label="Right Pupil")
+                               this_sub_run_df["RPupil_normalized"], alpha = .4, label="Right Pupil")
             # set labels
             axes[run_num-1].set_title(f"Run {run_num}")
             axes[run_num-1].set_xlabel("Normalized Time (ms from run start)")
@@ -719,7 +710,7 @@ def eye_coordinates(dfSamples, subjects):
         for run_num in range(1,6): # 5 runs for each subject
             # get subset of dataframe for this subject and run
          # get subset of dataframe for this subject and run
-             this_sub_run_df = dfSamples[(dfSamples["Subject"] == str(subject_num)) &
+             this_sub_run_df = dfSamples[(dfSamples["Subject"] == subject_num) &
                                         (dfSamples["run_num"] == float(run_num))]
              # plot pupil dilation for this subject and run
              axes[run_num-1].plot(this_sub_run_df["LX"],
@@ -744,128 +735,84 @@ def eye_coordinates(dfSamples, subjects):
 # just to check for artifacts
 
 #%% Interpolate Pupil
+# may need to be updated to utilize saccades instead of a blink buffer
 # run interpolation on samples csv for each subject and run
 subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125,10127]
-data_path = "/Volumes/Lexar/" 
-dfBlink = pd.read_csv(f"{data_path}MW_Classifier_Data/all_s_blinks.csv")
+data_path = "E:\\" 
+dfBlink = pd.read_csv(f"{data_path}MW_Classifier_Data\\all_s_blinks.csv")
 for subject in subjects:
     for run in range(1,6):
         subject_str = str(subject)
         dfSamples = pd.read_csv(f"{data_path}/CSV_Samples/{subject}/s{subject_str[-3:]}_r{run}_Sample.csv")
         interpolate_pupil_over_blinks(dfSamples, dfBlink, subject, run)
         
-#%% Interpolate Coordinates - have not done yet!
 
+#%%
+# investigate issue with non-finite values in eye coordinates
+s10014_inter_r1 = pd.read_csv("E:\\CSV_Samples\\10014\\s014_r1_Sample_Interpolated_Pupil.csv")
+print("missing values")
+print(s10014_inter_r1[['LX', 'LY', 'RX', 'RY']].isna().sum())
+print("inf values")
+print(s10014_inter_r1[['LX', 'LY', 'RX', 'RY']].apply(lambda x: np.isinf(x).sum()))
+
+
+#%% Interpolate Coordinates, updating the csvs that already went through pupil interpolation
+# hold off on this until I can discuss infinite values with lab - how to proceed with them? 
+# set to na then interpolate over? linear interpolation?
+
+# before doing this, make a plot of the coordinates over time on the not interpolated
+# data and save in pre artifact removal folder to show a before and after
 for subject in subjects:
     for run in range(1,6):
         subject_str = str(subject)
-        dfSamples = pd.read_csv(f"{data_path}/CSV_Samples/{subject}/s{subject_str[-3:]}_r{run}_Sample.csv")
+        dfSamples = pd.read_csv(f"E:\\CSV_Samples\\{subject}\\s{subject_str[-3:]}_r{run}_Sample_Interpolated.csv")
         interpolate_coordinates_over_blinks(dfSamples, dfBlink, subject, run)
 
 #%% extract
-
+# currently set to extract from interpolated_pupil files
 # create raw samples from those interpolated csvs (extract_raw_samples)
 subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125,10127]
 
 for subject in subjects:
-    folder_path = f"/Volumes/Lexar/CSV_Samples/{subject}"
+    folder_path = f"E:\\CSV_Samples\\{subject}"
     extract(subject, folder_path)
 
 #%% Preprocess
-
+# redo process starting here after changing drive format
 subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125,10127]
-data_path = "/Volumes/Lexar/MW_Classifier_Data/"
+data_path = "E:\\MW_Classifier_Data\\"
 dfSamples = load_raw_samples(data_path, subjects)
 dfSamples = preprocess(dfSamples)
 
 #%%
-print(dfSamples["run_num"].unique())
-print(dfSamples["Subject"].unique())
+# Drop "Unnamed: 0", "LPupil", "RPupil"
+dfSamples = dfSamples.drop(["Unnamed: 0", "LPupil", "RPupil"], axis=1)
 print(dfSamples.columns)
+#%% save processed file to new csv
+chunksize = 100000
+dfSamples.to_csv("E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil.csv", chunksize=chunksize, index=False)
 
-#%%
+#%% 
+# get subject and run num dtypes in interpolated samples
 print(dfSamples["Subject"])
 print(dfSamples["run_num"])
+
+#both are numeric
+
+#%%
+
+dfSamples = pd.read_csv("E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil.csv")
 #%% Plot
-# missing data for subjects and runs or not finding it with existing code
-# likely bc run num is float instead of int and subject num is string
-# adjust plot code as needed
-#correlation_heatmap(dfSamples)
-#mw_freq_by_subject(dfSamples)
-#mw_over_time(dfSamples)
-#pupil_over_time(dfSamples)
+correlation_heatmap(dfSamples)
+mw_freq_by_subject(dfSamples)
+mw_over_time(dfSamples)
+pupil_over_time(dfSamples)
 pupil_subject_run(dfSamples, subjects)
 eye_coordinates(dfSamples, subjects)
 
-#%% some checks
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-for subject_num in subjects:
-    for run_num in range(1,6): # 5 runs for each subject
-        this_sub_run_df = dfSamples[(dfSamples["Subject"] == str(subject_num)) &
-                                    (dfSamples["run_num"] == float(run_num))]
-        if this_sub_run_df.empty:
-            print(f"No data for Subject {subject_num}, Run {run_num}")
-            continue
-        else:
-            print("not empty for Subject {subject_num}, Run {run_num}")
-    
-    
-print(this_sub_run_df[["tSample_normalized", "LPupil", "RPupil"]].head())
-
-#%%
-print(dfSamples.isna().sum())
-
-#%%
-dfSamples.to_CSV("/Volumes/Lexar/MW_Classifier_Data/Samples_all_s_interpolated_pupil.csv")
-
-#%% old setup (interpolate after getting raw samples)
-data_path = "/Volumes/Lexar/MW_Classifier_Data/" 
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-
-dfSamples = load_raw_samples(data_path, subjects)
-# uncomment the following two lines if you do not have blink data saved as CSV yet
-# dont forget to add a line to change datapath back to point to MW_Classifier_Data
-# before getting dfBlink from the CSV if you do this
-# data_path = "/Volumes/Lexar/ASC_Files/" 
-# load_blink_data(subjects, data_path)
-
-
-# print_info(dfSamples)
-
-dfSamples = preprocess(dfSamples)
-dfSamples.to_csv(f"{data_path}all_subjects_data_no_interpolation.csv")
-
-#%% old setup continuted
-dfBlink = pd.read_csv(f"{data_path}all_s_blinks.csv")
-
-# dfBlink: subject and run_num are ints
-# dfSamples: subject is string, run_num is float - change to ints
-
-dfSamples["Subject"] = dfSamples["Subject"].astype(int)
-
-dfSamples["run_num"] = dfSamples["run_num"].astype(int)
-
-#interpolate pupil over blinks and plot
-
-# uncomment the following two lines if you haven't saved the CSV with interpolated
-# pupil data yet, dont forget to comment out the line that reads the interpolated 
-# data from the csv too
-# dfSamples = interpolate_pupil_over_blinks(dfSamples, dfBlink, subjects)
-# dfSamples.to_csv(f"{data_path}/interpolated_samples.csv" )
-
-dfSamples = pd.read_csv(f"{data_path}/interpolated_samples.csv")
-# make plots
-#correlation_heatmap(dfSamples)
-#mw_freq_by_subject(dfSamples)
-#mw_over_time(dfSamples)
-#pupil_over_time(dfSamples)
-pupil_subject_run(dfSamples, subjects)
-#eye_coordinates(dfSamples, subjects)
 
 #%% Get subject datatype
 data_path = "/Volumes/Lexar/MW_Classifier_Data/" 
@@ -876,21 +823,12 @@ dfSamples = pd.read_csv(f"{data_path}all_subjects_data_no_interpolation.csv")
 print(dfSamples["Subject"])
 
 # subject is int in dfSamples when not interpolated
-#%% Normalize pupils and save CSV again
 
-dfSamples = normalize_pupil(dfSamples)
-dfSamples.to_csv(f"{data_path}all_subjects_data_no_interpolation.csv")
 
 #%%
-# run fntns cell again before running this
-print_info(dfSamples)
-lpupil_means = dfSamples.groupby('Subject')['LPupil_normalized'].mean()
-rpupil_means = dfSamples.groupby('Subject')['RPupil_normalized'].mean()
+data_path = "E:\\"
+# check to see if there are any values other than L and R for eye in blinks
+dfBlink = pd.read_csv(f"{data_path}MW_Classifier_Data\\all_s_blinks.csv")
+print(dfBlink["eye"].unique())
 
-print(lpupil_means)
-print(rpupil_means)
-
-#%% drop sample id, lpupil, and rpupil then save
-dfSamples = dfSamples.drop(["sample_id", "LPupil", "RPupil"],axis=1)
-print("cols have been dropped")
-dfSamples.to_csv(f"{data_path}all_subjects_data_no_interpolation.csv")
+# there are not
