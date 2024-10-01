@@ -19,17 +19,19 @@ def extract_raw(sub_id, folder_path):
         for filename in files:
             # Check if the file ends with 'sample.csv'
             # change this if doing coordinate interpolation too
-            if filename.endswith("Sample_Interpolated.csv"):
+            if not filename.startswith('._') and filename.endswith("Sample_Interpolated_Pupil_Coord.csv"):
                 file_path = os.path.join(root, filename)
                 # Read the CSV file into a DataFrame
                 file_paths.append(file_path)
+                print(file_path)
     
     # read in the "metadata" file and get page start and end time
     df_metadata = None
     for filename in os.listdir(folder_path):
-        if filename.endswith("features_whole.csv"):
+        if not filename.startswith('._') and filename.endswith("features_whole.csv"):
             file_path = os.path.join(folder_path, filename)
             # Read the CSV file into a DataFrame
+            print(file_path)
             df_metadata = pd.read_csv(file_path)
             print(f"File loaded: {file_path}")
             break  # Stop after finding the first match
@@ -103,4 +105,4 @@ def extract_raw(sub_id, folder_path):
         # concat current DF (trunc) with full DF
         df_all_samples = pd.concat([df_all_samples, df_sample_trunc])
     # write full DF to CSV
-    df_all_samples.to_csv(f'E:\\MW_Classifier_Data\\{sub_id}_raw_interpolated.csv', index=False)
+    df_all_samples.to_csv(f'/Volumes/Lexar/MW_Classifier_Data/{sub_id}_raw_interpolated_pupil_coord.csv', index=False)
