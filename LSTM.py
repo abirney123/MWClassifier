@@ -170,24 +170,27 @@ class LSTMModel(torch.nn.Module):
         # bidirectional lstm with batch as first dimension
         self.lstm = torch.nn.LSTM(input_size=input_size, hidden_size=hidden_size,
                                   num_layers=num_layers, batch_first=True, bidirectional=True)
-        #self.fc = torch.nn.Linear(hidden_size*2, hidden_size*2)
-        #self.relu = nn.ReLU()
+        self.fc = torch.nn.Linear(hidden_size*2, hidden_size*2)
+        self.relu = nn.ReLU()
         # fc should be hidden size *2 because bidirectional - map hidden state to output size
         self.fc2 = torch.nn.Linear(hidden_size*2, output_size)
     def forward(self,x):
         # x shape: (batch size, sequence length, number of features)
         out, _ = self.lstm(x)
-        #out = self.fc(out)
-        #out = self.relu(out)
+        out = self.fc(out)
+        out = self.relu(out)
         out = self.fc2(out)
         return out
 
 #%%
 
 #file_path = "/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated_pupil_coord.csv"
-file_path = "E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil_coord.csv"
+#file_path = "E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil_coord.csv"
+file_path = "E:\\MW_Classifier_Data\\all_subjects_data_no_interpolation.csv"
 dfSamples = load_data(file_path)
 
+#%%
+print(dfSamples.columns)
 #%%
 
 # train test split
@@ -202,10 +205,23 @@ print(train_data.columns)
 print(test_data.columns)
 
 #%%
+# find mean mw duration in train set
+# make copy of train data so i dont alter the actual dataq
+train_copy = train_data.copy()
+# find groups of consecutive rows where is_MW == 1
+train_copy["MW_change"] = train_copy["is_MW"].ne(train_copy["is_MW"].shift()).cumsum()
+# filter only mw = 1
+mw_eps = train_copy[train_copy["is_MW"]==1]
+# group by MW_change to id distinct episodes
+mw_ep_lens = mw_eps.groupby("MW_change").size()
+mean_mw_dur = mw_ep_lens.mean()
+print(mean_mw_dur)
+
+#%%
 # create datasets
 # set parameters
-sequence_length = 4000
-step_size = 500
+sequence_length = 8000
+step_size = 250
 columns_to_scale = ["LX", "LY", "RX", "RY", "tSample_normalized"]
 # initialize scaler
 scaler = StandardScaler()
@@ -219,8 +235,8 @@ print(len(train_dataset))
 # specify num workers?
 # use collate fntn to add padding when sequences vary in length (we have more
 # samples for some subjects than others) - removing bc no longer necessary i think collate_fn=add_padding
-trainloader = DataLoader(train_dataset, batch_size = 64, shuffle=False)
-testloader = DataLoader(test_dataset, batch_size = 64, shuffle=False)
+trainloader = DataLoader(train_dataset, batch_size = 32, shuffle=False)
+testloader = DataLoader(test_dataset, batch_size = 32, shuffle=False)
 
 """
 for i, (inputs, labels) in enumerate(trainloader):
@@ -290,7 +306,12 @@ num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 num_epochs = 10
 lr = .0001
-pos_weight = torch.tensor([294780851/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
+# following pos weight is for sequence len 4k batch size 64 step size 500- double check before using again though, might have been typo to have 1 on the end for not mw
+#pos_weight = torch.tensor([294780851/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
+# for seq len 8k, batch size 32, step size 250
+#pos_weight = torch.tensor([29478085/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
+pos_weight = torch.tensor([30656216/2931782]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
+
 # instantiate LSTM and move to GPU
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 
