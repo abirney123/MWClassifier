@@ -186,20 +186,25 @@ class LSTMModel(torch.nn.Module):
 
 #file_path = "/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated_pupil_coord.csv"
 #file_path = "E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil_coord.csv"
-file_path = "E:\\MW_Classifier_Data\\all_subjects_data_no_interpolation.csv"
+file_path = "E:\\MW_Classifier_Data\\all_sub_no_interp_with_blink.csv"
 dfSamples = load_data(file_path)
 
 #%%
-print(dfSamples.columns)
+# check for missing values and confirm dtypes are correct
+print(dfSamples.dtypes)
+print(dfSamples.isna().sum())
+
+
+
 #%%
 
 # train test split
 # do subject-wise train test split to ensure model generalizes well to new subjects
 train_data, test_data = split_data(dfSamples)
 
-# drop page num, run num, sample id, tSample, subject from train and test data
-train_data = train_data.drop(columns=["page_num", "run_num", "sample_id", "tSample", "Subject"])
-test_data = test_data.drop(columns=["page_num", "run_num", "sample_id", "tSample", "Subject"])
+# drop page num, run num, sample id, tSample, tSample_normalized, subject, mw_proportion from train and test data
+train_data = train_data.drop(columns=["page_num", "run_num", "sample_id", "tSample", "Subject", "tSample_normalized", "mw_proportion"])
+test_data = test_data.drop(columns=["page_num", "run_num", "sample_id", "tSample", "Subject", "tSample_normalized", "mw_proportion"])
 
 print(train_data.columns)
 print(test_data.columns)
@@ -220,9 +225,10 @@ print(mean_mw_dur)
 #%%
 # create datasets
 # set parameters
-sequence_length = 8000
+sequence_length = 1000 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
+# might have been suffering from vanishing gradient with 4k and 8k
 step_size = 250
-columns_to_scale = ["LX", "LY", "RX", "RY", "tSample_normalized"]
+columns_to_scale = ["LX", "LY", "RX", "RY"]
 # initialize scaler
 scaler = StandardScaler()
 # instantiate - scaling applied in dataset class
@@ -235,8 +241,8 @@ print(len(train_dataset))
 # specify num workers?
 # use collate fntn to add padding when sequences vary in length (we have more
 # samples for some subjects than others) - removing bc no longer necessary i think collate_fn=add_padding
-trainloader = DataLoader(train_dataset, batch_size = 32, shuffle=False)
-testloader = DataLoader(test_dataset, batch_size = 32, shuffle=False)
+trainloader = DataLoader(train_dataset, batch_size = 128, shuffle=False)
+testloader = DataLoader(test_dataset, batch_size = 128, shuffle=False)
 
 """
 for i, (inputs, labels) in enumerate(trainloader):
@@ -298,14 +304,13 @@ gc.collect()
 # TBTT - pyTorch does automatically when backprop over truncated sequences
 #torch.cuda.empty_cache()
 
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 input_size = len(train_data.columns)-1 # num features per timestep, num columns in train or test -1 for labels
 hidden_size = 128 # can afford to go bigger bc of our dataset size, but lets start here
 num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 num_epochs = 10
-lr = .0001
+lr = .001
 # following pos weight is for sequence len 4k batch size 64 step size 500- double check before using again though, might have been typo to have 1 on the end for not mw
 #pos_weight = torch.tensor([294780851/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
 # for seq len 8k, batch size 32, step size 250
@@ -354,7 +359,7 @@ print("Training Complete")
 save_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier.pth"
 torch.save(model.state_dict(), save_path)
 print("Model saved to ", save_path)
-#%%
+
 # plot loss and save plot
 plt.plot(range(1,num_epochs+1), loss_vals)
 plt.title("Training Loss Over Epochs")
