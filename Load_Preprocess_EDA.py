@@ -1354,23 +1354,67 @@ subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
 data_path = "/Volumes/brainlab/Mindless Reading/DataCollection/"
 dfBlinks = load_blink_data(subjects, data_path)
 
-#%%
+#%% load all blinks
 dfBlink = pd.read_csv("/Volumes/Lexar/MW_Classifier_Data/all_s_blinks_9_30.csv")
-#%%
-print(dfBlink["Subject"].unique())
-# plot blink distribution
+#%%  get info about data 
+# set min as the shortest blink duration
+# fewer, wider bins for the upper range to avoid skewing plot because of outliers
+print(dfBlink["Subject"])
+print(dfBlink.columns)
+
+# drop subject 10127 bc only one eye data
+dfBlink = dfBlink.loc[dfBlink["Subject"] != 10127]
+
 left_blinks = dfBlink[dfBlink["eye"] == "L"]
 right_blinks = dfBlink[dfBlink["eye"] == "R"]
 
 # get blink durations
-left_blink_durations = left_blinks["tEnd"] - left_blinks["tStart"]
-right_blink_durations = right_blinks["tEnd"] - right_blinks["tStart"]
+left_blink_durations = left_blinks["duration"]
+right_blink_durations = right_blinks["duration"]
 
+# get info about blink durs
+print(left_blink_durations.describe())
+print(right_blink_durations.describe())
+
+"""
+L blinks
+mean        213.303411
+std        1373.980800
+min           1.000000
+25%          77.000000
+50%         104.000000
+75%         139.000000
+max      105310.000000
+
+R blinks
+mean       184.276158
+std        604.491120
+min          1.000000
+25%         75.000000
+50%        100.000000
+75%        136.000000
+max      34827.000000
+
+Most blinks are between 74-140ms (IQR) - have fine bins here and wider ones for outliers
+"""
+print(dfBlink["Subject"].unique())
+#%% make bin edges array
+# higher third # = smaller bins
+# little bins for small blinks 
+# medium bins for medium blinks
+# large bins for our large, outlier blinks
+#bin_edges = [np.linspace(0,140,40), np.linspace(140,105310, 30)]
+#bin_edges = np.concatenate(bin_edges)
+
+# make 50 log spaced bin edges from min to max
+bin_edges = np.logspace(np.log10(1), np.log10(105310), 50)
+#%% plot blink dist
 # plot distribution
 # provide array of bin edges - we probably have one long outlier for l eye blink
 plt.figure(figsize=(10, 6))
-plt.hist(left_blink_durations, bins=50, alpha=0.5, label='Left Eye Blink Durations')
-plt.hist(right_blink_durations, bins=50, alpha=0.5, label='Right Eye Blink Durations')
+plt.hist(left_blink_durations, bins=bin_edges, alpha=0.5, label='Left Eye Blink Durations')
+plt.hist(right_blink_durations, bins=bin_edges, alpha=0.5, label='Right Eye Blink Durations')
+plt.xscale("log")
 plt.xlabel('Blink Duration (ms)')
 plt.ylabel('Frequency')
 plt.title('Distribution of Blink Durations for Left and Right Eyes')
