@@ -306,7 +306,7 @@ gc.collect()
 
 
 input_size = len(train_data.columns)-1 # num features per timestep, num columns in train or test -1 for labels
-hidden_size = 128 # can afford to go bigger bc of our dataset size, but lets start here
+hidden_size = 256 # can afford to go bigger bc of our dataset size, but lets start here
 num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 num_epochs = 10

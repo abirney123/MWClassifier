@@ -103,7 +103,7 @@ class CNNModel(nn.Module):
         out = F.relu(out)
         out = self.fc5(out)
         # Apply sigmoid activation for binary classification
-        out = torch.sigmoid(out)
+        # out = torch.sigmoid(out)
 
         return out
 
