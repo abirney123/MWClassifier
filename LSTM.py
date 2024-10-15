@@ -6,8 +6,6 @@ Created on Sat Sep 28 19:53:46 2024
 @author: Alaina
 Use TorchGPU conda environment 
 
-look into incorporating attention mechanism
-
 """
 import pandas as pd
 import torch
@@ -15,16 +13,23 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from sklearn.model_selection import train_test_split
 import torch.nn as nn
 import torch.optim as optim
-from torchmetrics import F1Score, AUROC
+from torchmetrics import F1Score, AUROC, MatthewsCorrCoef
+from torcheval.metrics import BinaryAUROC
 from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import os
 from sklearn.preprocessing import StandardScaler
-
+import time
+from sklearn.metrics import confusion_matrix
+import seaborn as sn
 
 #%%
+import torchmetrics
+print(torchmetrics.__version__)
+#%%
+
 
 def load_data(file_path, chunksize = 500000):
     # load data in chunks
@@ -51,23 +56,21 @@ def split_data(dfSamples):
     # so model generalizes well to new subjects and runs
     
     # calculate MW proportion per subject
-    sub_mw_proportions = dfSamples.groupby("Subject")["is_MW"].mean().reset_index()
+    sub_mw_proportions = dfSamples.groupby(["Subject","run_num"])["is_MW"].mean().reset_index()
     # rename cols for clarity
-    sub_mw_proportions.columns = ["Subject", "mw_proportion"]
+    sub_mw_proportions.columns = ["Subject", "run_num", "mw_proportion"]
     
-    # get unique subject run pairs
-    sub_run_pairs = dfSamples[["Subject", "run_num"]].drop_duplicates()
-    
-    # merge MW proportions with sub run pairs
-    sub_run_pairs = pd.merge(sub_run_pairs, sub_mw_proportions, on="Subject")
+    # use pd cut to separate mw proportion into bins to represent low medium and high mw occurances
+    sub_mw_proportions["mw_bin"] = pd.cut(sub_mw_proportions["mw_proportion"], bins=3, labels=["low", "medium", "high"])
     
     # split sub run pairs into train and test 
     # shuffle is true here because just shuffling the sub run pairs, not the 
     # time series data
     # stratified split by mw proportion 
-    train_pairs, test_pairs = train_test_split(sub_run_pairs,
+    train_pairs, test_pairs = train_test_split(sub_mw_proportions,
                                                test_size = .2, random_state=42,
-                                               stratify=sub_run_pairs["mw_proportion"])
+                                               stratify=sub_mw_proportions["mw_bin"])
+    
     
     # merge back to train and test to get full sets
     train_data = pd.merge(dfSamples, train_pairs, on=["Subject", "run_num"])
@@ -194,8 +197,13 @@ dfSamples = load_data(file_path)
 print(dfSamples.dtypes)
 print(dfSamples.isna().sum())
 
+counts = dfSamples.groupby(["Subject", "run_num"]).size().reset_index(name='counts')
 
-
+# Display the counts for each subject-run pair
+print(counts)
+rare_cases = counts[counts["counts"] < 2]
+print("Subject-Run pairs with fewer than 2 rows of data:")
+print(rare_cases)
 #%%
 
 # train test split
@@ -203,11 +211,14 @@ print(dfSamples.isna().sum())
 train_data, test_data = split_data(dfSamples)
 
 # drop page num, run num, sample id, tSample, tSample_normalized, subject, mw_proportion from train and test data
-train_data = train_data.drop(columns=["page_num", "run_num", "sample_id", "tSample", "Subject", "tSample_normalized", "mw_proportion"])
-test_data = test_data.drop(columns=["page_num", "run_num", "sample_id", "tSample", "Subject", "tSample_normalized", "mw_proportion"])
+train_data = train_data.drop(columns=["page_num", "run_num", "sample_id",
+                                      "tSample", "Subject", "tSample_normalized",
+                                      "mw_proportion", "mw_bin"])
+test_data = test_data.drop(columns=["page_num", "run_num", "sample_id",
+                                    "tSample", "Subject", "tSample_normalized",
+                                    "mw_proportion", "mw_bin"])
 
-print(train_data.columns)
-print(test_data.columns)
+
 
 #%%
 # find mean mw duration in train set
@@ -225,7 +236,7 @@ print(mean_mw_dur)
 #%%
 # create datasets
 # set parameters
-sequence_length = 1000 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
+sequence_length = 4000 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
 # might have been suffering from vanishing gradient with 4k and 8k
 step_size = 250
 columns_to_scale = ["LX", "LY", "RX", "RY"]
@@ -236,13 +247,53 @@ train_dataset = WindowedTimeSeriesDataset(train_data, sequence_length,
                                           step_size, scaler = scaler, fit_scaler = True, columns_to_scale = columns_to_scale)
 test_dataset = WindowedTimeSeriesDataset(test_data, sequence_length,
                                          step_size,scaler = scaler, fit_scaler = False, columns_to_scale = columns_to_scale)
+# num sequencecs for training
 print(len(train_dataset))
+
+#%% set up weightedRandomSampler for sequences
+
+
+# calculate the majority label in each sequence
+majority_labels = []
+i = 1
+print("calculating majority labels")
+for idx, (_, sequence_labels) in enumerate(train_dataset):
+    if len(sequence_labels) == 0:
+        break
+    print(f"iteration {i} of {len(train_dataset)}")
+    print(f"Start index: {idx * step_size}, End index: {idx * step_size + sequence_length}")
+    print(f"Shape of sequence_labels: {sequence_labels.shape}")
+    # using .5 threshold- if more than half the labels in the sequence are mw, label sequence as mw
+    majority_label = (sequence_labels.sum() > (len(sequence_labels) // 2)).int().item()
+    majority_labels.append(majority_label)
+    i+=1
+    
+majority_labels = torch.tensor(majority_labels)
+# get class weights
+print("getting class weights")
+not_mw = (majority_labels == 0).sum()
+mw = (majority_labels == 1).sum()
+class_weights = [1.0/not_mw, 1.0/mw]
+print("assigning weights")
+# assign each sample a weight based on class & class weights
+sequence_weights = torch.tensor([class_weights[label] for label in majority_labels],
+                              dtype=torch.float)
+
+print("instantiating sampler")
+# instantiate weightedRandomSampler
+weighted_sampler = WeightedRandomSampler(weights=sequence_weights,
+                                         num_samples = len(sequence_weights), replacement=True)
+# len majority labels should match len train_dataset
+#%%
 # create DataLoaders - no shuffling as this is time series data
 # specify num workers?
 # use collate fntn to add padding when sequences vary in length (we have more
 # samples for some subjects than others) - removing bc no longer necessary i think collate_fn=add_padding
-trainloader = DataLoader(train_dataset, batch_size = 128, shuffle=False)
-testloader = DataLoader(test_dataset, batch_size = 128, shuffle=False)
+trainloader = DataLoader(train_dataset, batch_size = 64, collate_fn = add_padding, 
+                         shuffle=False, sampler=weighted_sampler)
+
+testloader = DataLoader(test_dataset, batch_size = 64, collate_fn = add_padding, 
+                        shuffle=False)
 
 """
 for i, (inputs, labels) in enumerate(trainloader):
@@ -284,9 +335,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device: ", device)
 
 #%%
-del model
-del optimizer
-del loss
+#del model
+#del optimizer
+#del loss
 
 
 torch.cuda.empty_cache()
@@ -304,35 +355,45 @@ gc.collect()
 # TBTT - pyTorch does automatically when backprop over truncated sequences
 #torch.cuda.empty_cache()
 
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+# set max grad norm for gradient clipping
+max_grad_norm = 1.0
 
 input_size = len(train_data.columns)-1 # num features per timestep, num columns in train or test -1 for labels
 hidden_size = 128 # can afford to go bigger bc of our dataset size, but lets start here
 num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
-num_epochs = 10
+num_epochs = 25
 lr = .001
 # following pos weight is for sequence len 4k batch size 64 step size 500- double check before using again though, might have been typo to have 1 on the end for not mw
 #pos_weight = torch.tensor([294780851/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
 # for seq len 8k, batch size 32, step size 250
 #pos_weight = torch.tensor([29478085/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
-pos_weight = torch.tensor([30656216/2931782]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
+#pos_weight = torch.tensor([31001855/2883141]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
 
 # instantiate LSTM and move to GPU
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 
-criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight) # BCE with logits bc binary classification
+#criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight) # BCE with logits bc binary classification
+criterion = nn.BCEWithLogitsLoss()
 # pos weight to help with class imbalance
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
 # train
 # initialize list to store loss for each epoch
 loss_vals = []
+
+total_batches = len(trainloader)
+# start timer
+start_time = time.time()
 for epoch in range(num_epochs):
     model.train() # put in training mode
     running_loss = 0.0
+    epoch_start_time = time.time()
     for i, (inputs,labels) in enumerate(trainloader):
         inputs = inputs.to(device)
         labels = labels.to(device)
+        
         # zero gradients for this batch
         optimizer.zero_grad()
         # forward prop - dont need signmoid bc included in loss fntn
@@ -341,6 +402,8 @@ for epoch in range(num_epochs):
         loss = criterion(outputs, labels.unsqueeze(-1))
         #backprop
         loss.backward()
+        # apply gradient clipping
+        torch.nn.utils.clip_grad_norm(model.parameters(), max_grad_norm)
         optimizer.step()
         
         # accumulate loss
@@ -348,7 +411,13 @@ for epoch in range(num_epochs):
         
         # output stats
         if i % 100 == 0:
+            elapsed_time = time.time() - start_time
+            avg_batch_time = elapsed_time / ((epoch * total_batches) + (i+1))
+            total_time = avg_batch_time * num_epochs * total_batches
+            remaining_time = total_time - elapsed_time
             print("Epoch: %d Minibatch %5d loss: %.3f" %(epoch +1, i+1, loss.item()))
+            print(f"Elapsed time: {elapsed_time //60:.0f} min {elapsed_time % 60:.0f} sec")
+            print(f"Estimated remaining time: {remaining_time // 60:.0f} min {remaining_time % 60:.0f} sec")
             
     # get and store avg loss for this epoch
     epoch_loss = running_loss / len(trainloader)
@@ -371,6 +440,14 @@ plt.savefig(f"C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\plots\\LSTM_lo
 plt.show()
 
     
+#%% Load saved model if needed
+model_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier.pth"
+input_size = len(train_data.columns)-1 # num features per timestep, num columns in train or test -1 for labels
+hidden_size = 128 # can afford to go bigger bc of our dataset size, but lets start here
+num_layers = 2 # more than 3 isn't usually valuable, starting with 1
+output_size = 1 # how many values to predict for each timestep
+model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
+model.load_state_dict(torch.load(model_path))
 
 #%% Evaluate 
 
@@ -385,9 +462,11 @@ all_predictions = []
 all_labels = []
 all_probabilities = []
 
-# initialize f1 and auc for binary classification
+# initialize f1, auc, mcc for binary classification
 f1 = F1Score(task="binary")
 auc = AUROC(task="binary")
+auc_pr = BinaryAUROC()
+mcc = MatthewsCorrCoef(task="binary")
 
 for i, data in enumerate(testloader):
     with torch.no_grad(): # disable gradient calculation
@@ -425,12 +504,45 @@ all_probabilities = torch.cat(all_probabilities)
 # get auc
 overall_auc = auc(all_probabilities, all_labels)
 print(f"AUC: {overall_auc:.4f}")
+
+# get auc-pr
+# flatten probs and labels
+flat_probs = all_probabilities.view(-1)
+flat_labs = all_labels.view(-1)
+auc_pr.update(flat_probs, flat_labs)
+auc_pr_result = auc_pr.compute()
+print(f"AUC-PR: {auc_pr_result:.4f}")
 # get f1
 overall_f1 = f1(all_predictions, all_labels)
 print(f"Overall F1 Score: {overall_f1: .4f}")
 # take accuracy with a grain of salt bc our classes are imbalanced
 accuracy = (correct/total)*100
-print(f"Accuracy: {accuracy: .2f}%")
+print(f"Accuracy: {accuracy: .2f}%") 
+
+# confusion matrix
+# adapted from https://christianbernecker.medium.com/how-to-create-a-confusion-matrix-in-pytorch-38d06a7f04b7
+flat_predictions = all_predictions.view(-1)
+conf_mat = confusion_matrix(flat_labs, flat_predictions)
+conf_df = pd.DataFrame(conf_mat / np.sum(conf_mat, axis=1)[:, None], index = ["Not MW", "MW"],
+                     columns = ["Not MW", "MW"])
+
+plt.figure(figsize=(15,10))
+sn.heatmap(conf_df, annot=True, cmap="coolwarm", vmin = 0, vmax = 1)
+plt.xlabel("Predicted Value")
+plt.ylabel("True Value")
+curr_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+plt.savefig(f"C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\plots\\LSTM_confmatrix_{curr_datetime}.png")
+
+# mcc
+mcc_score = mcc(all_predictions, all_labels)
+print("MCC", mcc_score)
+# log loss
+# make probabilities shape match labels shape
+log_probs = all_probabilities.squeeze(-1)
+criterion = nn.BCEWithLogitsLoss()
+log_loss = criterion(log_probs, all_labels)
+print(f"Log loss: {log_loss: .4f}")
 
 print("Last 5 predictions and truth labels:")
 for i in range(-5,0):
