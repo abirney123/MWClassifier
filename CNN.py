@@ -12,25 +12,40 @@ import torch.nn.functional as F
 from torch.optim import Adam,AdamW
 from sklearn.preprocessing import StandardScaler
 import torch
-from torchmetrics import F1Score, AUROC, MatthewsCorrCoef
-from torcheval.metrics import BinaryAUROC
- 
+from torchmetrics.classification import BinaryAccuracy, BinaryAUROC, BinaryPrecisionRecallCurve, BinaryConfusionMatrix, BinaryF1Score, BinaryMatthewsCorrCoef, BinaryPrecision, BinaryRecall
 
 def combine_records(df :pd.DataFrame) ->pd.DataFrame:
-    mask = ( df['LX'] != df['LX'].shift() ) & ( df['LY'] != df['LY'].shift() ) & ( df['LPupil'] != df['LPupil'].shift() ) & ( 
-        df['RX'] != df['RX'].shift() ) & ( df['RY'] != df['RY'].shift() ) & ( df['RPupil'] != df['RPupil'].shift() )
+    # written by Omar Awajan, adapted by Alaina Birney
+    # omar: I admit I do not test my code
+    # Alain: I am aware!
+    # .....
+    # Alaina: this is how I changed it. Sure thing let me just grab my headphones
+    # create mask where True means curr row is different from previous row
+    # across all feature columns
+    mask = (
+        (df['LX'] != df['LX'].shift())
+    & (df['LY'] != df['LY'].shift())
+    & (df['RX'] != df['RX'].shift())
+    & (df['RY'] != df['RY'].shift())
+    & (df["LPupil"] != df["LPupil"].shift())
+    & (df["RPupil"] != df["RPupil"].shift())
+        )
+    # Group duplicates
     df['combined'] = mask.cumsum()
-    df_combined = df.groupby('combined', as_index=False)
-    df_combined = df_combined.apply(lambda x: x.drop(['combined'], axis=1))
-    return df_combined
-
+    # filter to get the first occurance of each combined group
+    df_filtered = df.loc[df.groupby("combined").head(1).index]
+    # drop combined column
+    df_filtered = df_filtered.drop(columns=["combined"]).reset_index()
+    return df_filtered
+ 
+# this is how I changed it. Sure thing let me just grab my headphones
 
 def get_label(df :pd.DataFrame) -> bool:
     counts = df['is_MW'].value_counts()
     if (len(counts.keys()) == 1):
         return bool(counts.keys()[0])
     ratio = counts.iloc[1]/counts.iloc[0]
-    if (ratio > 0.10) & (counts.keys()[0] == 1):
+    if (ratio > 0.50) & (counts.keys()[0] == 1):
         return 1
     return 0
 
@@ -86,7 +101,7 @@ class CNNModel(nn.Module):
         super(CNNModel, self).__init__()
 
         # 1D Convolution layer with a single layer
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=6, padding=0)
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=6,stride=6, padding=0)
         
         self.final_size = (size - 6) + 1  # Final size after conv layer
         
@@ -136,9 +151,14 @@ def data_loader(filepath :str):
     testSubjects :pd.DataFrame = df[df['Subject'].isin(subjectList[trainSize:])]
     trainSubjects.drop(columns=['Subject'],inplace=True)
     testSubjects.drop(columns=['Subject'], inplace=True)
+    print(trainSubjects.duplicated().sum())
+    exit()
     
+    print(trainSubjects.shape)
     trainSubjects = combine_records(trainSubjects)
-    testSubjects = combine_records(testSubjects)
+    print(trainSubjects.shape)
+    exit()
+    # testSubjects = combine_records(testSubjects)
 
     training_windows, training_labels = sliding_window(trainSubjects)
     testing_windows, testing_labels = sliding_window(testSubjects)
