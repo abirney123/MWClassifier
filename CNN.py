@@ -12,7 +12,17 @@ import torch.nn.functional as F
 from torch.optim import Adam,AdamW
 from sklearn.preprocessing import StandardScaler
 import torch
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from torchmetrics import F1Score, AUROC, MatthewsCorrCoef
+from torcheval.metrics import BinaryAUROC
+ 
+
+def combine_records(df :pd.DataFrame) ->pd.DataFrame:
+    mask = ( df['LX'] != df['LX'].shift() ) & ( df['LY'] != df['LY'].shift() ) & ( df['LPupil'] != df['LPupil'].shift() ) & ( 
+        df['RX'] != df['RX'].shift() ) & ( df['RY'] != df['RY'].shift() ) & ( df['RPupil'] != df['RPupil'].shift() )
+    df['combined'] = mask.cumsum()
+    df_combined = df.groupby('combined', as_index=False)
+    df_combined = df_combined.apply(lambda x: x.drop(['combined'], axis=1))
+    return df_combined
 
 
 def get_label(df :pd.DataFrame) -> bool:
@@ -127,6 +137,9 @@ def data_loader(filepath :str):
     trainSubjects.drop(columns=['Subject'],inplace=True)
     testSubjects.drop(columns=['Subject'], inplace=True)
     
+    trainSubjects = combine_records(trainSubjects)
+    testSubjects = combine_records(testSubjects)
+
     training_windows, training_labels = sliding_window(trainSubjects)
     testing_windows, testing_labels = sliding_window(testSubjects)
     
@@ -141,7 +154,7 @@ def CNN()->None:
     model = CNNModel()
     model.to(hw_device)
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = Adam(model.parameters(), lr=0.001)
+    optimizer = Adam(model.parameters(), lr=0.00001)
     epochs = 64
     batch = 10
 
@@ -178,9 +191,6 @@ def CNN()->None:
             optimizer.step()
 
             running_loss += loss.item()
-
-            if (i + 1) % 10 == 0:
-                print(f"Epoch {epoch + 1}/{epochs}, step {i + 1}/{len(train_loader)}, loss {loss.item()}")
 
         avg_loss = running_loss / len(train_loader) 
         loss_vals.append(avg_loss) 
@@ -219,7 +229,7 @@ def CNN()->None:
 
 
 
-
+0
 def main()->None:
     CNN()
     
