@@ -17,7 +17,7 @@ import pandas as pd
 import seaborn as sns
 from parse_EyeLink_asc import ParseEyeLinkAsc as parse_asc # from GBL github
 from matplotlib import pyplot as plt
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import interp1d #CubicSpline
 from extract_raw_samples import extract_raw as extract
 import os
 
@@ -51,7 +51,7 @@ def load_raw_samples(data_path, subjects):
         print(f"Loading subject {subject_num}")
         # change file path depending on if you want to load interpolated data files or not
         #df = pd.read_csv(f"{data_path}{subject_num}_raw_interpolated_pupil_coord.csv", dtype={11:str})
-        df = pd.read_csv(f"{data_path}{subject_num}_raw_with_blink.csv")
+        df = pd.read_csv(f"{data_path}{subject_num}_raw.csv")
         #df = pd.read_csv(f"{data_path}{subject_num}_raw.csv", dtype={10:str})
         # add subject id column to ensure even distribution when shuffling later for model
         df["Subject"] = f"{subject_num}"
@@ -188,7 +188,8 @@ def interpolate_pupil_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_num,
     dataframe of samples in place to change pupil dilation values to interpolated
     values, effectively removing blink artifacts. Saves interpolated data as csv.
     
-    Uses saccades as t1 and t4
+    Uses saccades as t1 and t4. Contains adjustments recommended through conversation
+    with Dr. J. Performs the interpolation over the normalized pupil dilation values.
     
     Inputs:
         - dfSamples: A dataframe containing samples for all subjects and all runs
@@ -228,10 +229,10 @@ def interpolate_pupil_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_num,
     # get the time of every sample
     sample_time = this_sub_run_samples['tSample'].to_numpy()
     #print(sample_time[10999:11999])
-    LPupil = np.array(this_sub_run_samples['LPupil'])
-    RPupil = np.array(this_sub_run_samples['RPupil'])
+    LPupil = np.array(this_sub_run_samples['LPupil_normalized'])
+    RPupil = np.array(this_sub_run_samples['RPupil_normalized'])
     # declare blink offset: 50ms added to the start and end of a blink
-    blink_off = 50
+    blink_off = 0#50
     
     # declare variables to store blink start information to merge blinks if 
     # they are too close 
@@ -257,6 +258,9 @@ def interpolate_pupil_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_num,
             
             # check if two blinks are too close to each other
             if b_end >= nb_start:
+                print("merging blinks")
+                # update blink end time if merging blinks
+                b_end = nrow["tEnd"] + blink_off
                 # merge two blinks into a longer one
                 update_start = False
                 continue
@@ -292,13 +296,14 @@ def interpolate_pupil_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_num,
         if pd.isna(t4):
             print("t4 is na, using blink duration")
             t4 = t3 + blink_dur
-        print("t1", t1, "t2", t2, "t3", t3, "t4", t4)
+        #print("t1", t1, "t2", t2, "t3", t3, "t4", t4)
         
         
         if (t1 > sample_time[0]) and (t4 < sample_time[-1]):
 
             # select time and pupil size for interpolation
-            x = [t1, t2, t3, t4]
+            #x = [t1, t2, t3, t4]
+            x = [t1,t4]
             # interpolation for Lpupil
             if row["eye"] == "L":
                 y_ind_L = []
@@ -314,7 +319,8 @@ def interpolate_pupil_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_num,
                 if valid_interpolation:
                     y_L = LPupil[y_ind_L]
                     # generate the spl model using the time and pupil size
-                    spl_L = CubicSpline(x, y_L)
+                    #spl_L = CubicSpline(x, y_L)
+                    lin_L = interp1d(x, y_L)
             # interpolation for Rpupil
             if row["eye"] == "R":
                 y_ind_R = []
@@ -330,32 +336,214 @@ def interpolate_pupil_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_num,
                 if valid_interpolation:
                     y_R = RPupil[y_ind_R]
                     # generate the spl model using the time and pupil size
-                    spl_R = CubicSpline(x, y_R)
+                    #spl_R = CubicSpline(x, y_R)
+                    lin_R = interp1d(x, y_R)
             if valid_interpolation:
                 # generate mask for blink duration
-                mask = (sample_time > t2) & (sample_time < t3)
+                #mask = (sample_time > t1) & (sample_time < t4)
+                # base mask on closest index instead of exact
+                idx_t1 = np.argmin(np.abs(sample_time - t1))
+                idx_t4 = np.argmin(np.abs(sample_time - t4))
+                mask = (sample_time > sample_time[idx_t1]) & (sample_time < sample_time[idx_t4])
                 x = sample_time[mask]
+                # sample times align with masked time range
+                print(f"masking time range: {t1} to {t4}")
+                print(f"Sample times in blink period: {sample_time[mask][0]} to {sample_time[mask][-1]}")
+                #print(f"LPupil in blink period: {LPupil[mask]}")
+                #print(f"RPupil in blink period: {RPupil[mask]}")
                 # use spl model to interpolate pupil size for blink duration
                 # do for each pupil
                 if row["eye"] == "L":
-                    interp_Lpupil = spl_L(x)
+                    interp_Lpupil = lin_L(x)
                 if row["eye"] == "R":
-                    interp_Rpupil = spl_R(x)
+                    interp_Rpupil = lin_R(x)
                 
                 # update the df for this subject and run
                 # Update dfSamples directly within the loop
                 if row["eye"] == "L":
                     #print(f"Updating indices: {this_sub_run_samples.index[mask]}")
-                    dfSamples.loc[this_sub_run_samples.index[mask], "LPupil"] = interp_Lpupil
+                    dfSamples.loc[this_sub_run_samples.index[mask], "LPupil_normalized"] = interp_Lpupil
                     # Print values after the update
                     #print("Values after update (LPupil):")
                     #print(dfSamples.loc[indices_to_update, "LPupil"])
                 if row["eye"] == "R":
                     #print(f"Updating indices: {this_sub_run_samples.index[mask]}")
-                    dfSamples.loc[this_sub_run_samples.index[mask], "RPupil"] = interp_Rpupil
-
+                    dfSamples.loc[this_sub_run_samples.index[mask], "RPupil_normalized"] = interp_Rpupil
                     
+                # if these were zeros this would cause the interpolation to fail, but they're not
+                #print(f"Pupil dilation at t1: {LPupil[y_ind_L[0]] if row['eye'] == 'L' else RPupil[y_ind_R[0]]}")
+                #print(f"Pupil dilation at t4: {LPupil[y_ind_L[1]] if row['eye'] == 'L' else RPupil[y_ind_R[1]]}")
+
+            
     dfSamples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated.csv")
+    return dfSamples
+
+def interpolate_pupil_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subject_num, run):
+    """
+    Interpolate left and right pupil sizes over blink periods. Modifies the
+    dataframe of samples in place to change pupil dilation values to interpolated
+    values, effectively removing blink artifacts. Saves interpolated data as csv.
+    
+    Uses saccades as t1 and t4. Contains adjustments recommended through conversation
+    with Dr. J. Performs the interpolation over the normalized pupil dilation values.
+    
+    Inputs:
+        - dfSamples: A dataframe containing samples for all subjects and all runs
+        - dfBlink: A dataframe containing information about the eye in which a 
+        blink occured and the time that that blink occured
+        - subject_num: String
+        The subject number for the subject whos data is currently being interpolated
+        - run: Int
+        The run number for the data that is currently being interpolated
+        
+    Returns:
+        None
+    """
+    # extracted from reading_analysis.py (author: HS)
+    # adjusted to work on dfs for all subjects and all runs and interpolate left and right pupil by AB
+    # https://github.com/GlassBrainLab/MindlessReadingAnalysis/blob/main/EyeAnalysisCode/reading_analysis.py
+    # interpolate the pupil size during the blink duration
+    # http://dx.doi.org/10.6084/m9.figshare.688002
+    
+    """
+    s10014 has tSample 898100, then jumps to 934682 which is why matches aren't being found.
+    this is true regardless of when rows with missing run num are dropped
+    added valid_interpolation flag to skip blinks that happen at times like this
+    
+    Run interpolation on sample csv before extracting raw samples!
+    Do for coordinates too 
+    
+    """
+    print(f"Interpolating for subject {subject_num}, run {run}")
+    i = 1
+    # get subset for this subject and run
+    # sample data
+    this_sub_run_samples = dfSamples
+    # blink data
+    #this_sub_run_blinks = dfBlink[(dfBlink["Subject"] == subject_num) & 
+                                #(dfBlink["run_num"] == run)]
+    this_sub_run_blinks = dfBlink
+    # get the time of every sample
+    sample_time = this_sub_run_samples['tSample'].to_numpy()
+    #print(sample_time[10999:11999])
+    LPupil = np.array(this_sub_run_samples['LPupil_normalized'])
+    RPupil = np.array(this_sub_run_samples['RPupil_normalized'])
+
+    # iterate throu each row of blink dataframe
+    print("num blinks for this subject and run: ", len(this_sub_run_blinks))
+    print("num samples for this subject and run: ", len(this_sub_run_samples))
+    for index in np.arange(len(this_sub_run_blinks)):
+        # reset flag
+        valid_interpolation = True
+        row = this_sub_run_blinks.iloc[index]
+        # get the start and end time
+        b_start = row['tStart'] 
+        b_end = row['tEnd']
+
+        
+        # get the blink duration
+        blink_dur = b_end - b_start
+
+
+        # set t1 to be the end time of the last saccade before the blink
+        #get all saccades before this blink
+        previous_saccades = dfSaccades[dfSaccades["tEnd"] < b_start]
+        # get last saccade before this blink
+        last_saccade_tEnd = previous_saccades["tEnd"].max()
+        # set t4 to be the start time of the first saccade after the blink
+        # get all saccades after this blink
+        later_saccades = dfSaccades[dfSaccades["tStart"] > b_end]
+        # get the first saccade after this blink
+        first_saccade_tStart = later_saccades["tStart"].min()
+        t1 = last_saccade_tEnd
+        t4 = first_saccade_tStart
+        # check for missing vals in t1 or t4 and use fallback if needed
+        if pd.isna(t1):
+            print("t1 is na, using blink duration")
+            t1 = b_start
+        if pd.isna(t4):
+            print("t4 is na, using blink duration")
+            t4 = b_end
+        #print("t1", t1, "t2", t2, "t3", t3, "t4", t4)
+        
+        
+        if (t1 > sample_time[0]) and (t4 < sample_time[-1]):
+
+            # select time and pupil size for interpolation
+            #x = [t1, t2, t3, t4]
+            x = [t1,t4]
+            # interpolation for Lpupil
+            if row["eye"] == "L":
+                y_ind_L = []
+                for t in x:
+                    if t in sample_time:
+                        y_ind_L.append(np.where(sample_time==t)[0][0])
+                    else:
+                        print(f"No exact match found for time {t}. Skipping this blink.")
+                        valid_interpolation = False
+                        break 
+                    #closest_index = np.argmin(np.abs(sample_time - t))
+                    #y_ind_L.append(closest_index)
+                if valid_interpolation:
+                    y_L = LPupil[y_ind_L]
+                    # generate the spl model using the time and pupil size
+                    #spl_L = CubicSpline(x, y_L)
+                    lin_L = interp1d(x, y_L)
+            # interpolation for Rpupil
+            if row["eye"] == "R":
+                y_ind_R = []
+                for t in x:
+                    if t in sample_time:
+                    #closest_index = np.argmin(np.abs(sample_time - t))
+                        y_ind_R.append(np.where(sample_time==t)[0][0])
+                    else:
+                        print(f"No exact match found for time {t}. Skipping this blink.")
+                        valid_interpolation = False
+                        break 
+                    #y_ind_R.append(closest_index)
+                if valid_interpolation:
+                    y_R = RPupil[y_ind_R]
+                    # generate the spl model using the time and pupil size
+                    #spl_R = CubicSpline(x, y_R)
+                    lin_R = interp1d(x, y_R)
+            if valid_interpolation:
+                # generate mask for blink duration
+                mask = (sample_time > t1) & (sample_time < t4)
+                x = sample_time[mask]
+                # sample times align with masked time range
+                if i == 1:
+                    print(f"masking time range: {t1} to {t4}")
+                    print(f"Sample times in blink period: {sample_time[mask][0]} to {sample_time[mask][-1]}")
+                
+                i+=1
+                #print(f"LPupil in blink period: {LPupil[mask]}")
+                #print(f"RPupil in blink period: {RPupil[mask]}")
+                # use spl model to interpolate pupil size for blink duration
+                # do for each pupil
+                if row["eye"] == "L":
+                    interp_Lpupil = lin_L(x)
+                if row["eye"] == "R":
+                    interp_Rpupil = lin_R(x)
+                
+                # update the df for this subject and run
+                # Update dfSamples directly within the loop
+                if row["eye"] == "L":
+                    #print(f"Updating indices: {this_sub_run_samples.index[mask]}")
+                    dfSamples.loc[this_sub_run_samples.index[mask], "LPupil_normalized"] = interp_Lpupil
+                    # Print values after the update
+                    #print("Values after update (LPupil):")
+                    #print(dfSamples.loc[indices_to_update, "LPupil"])
+                if row["eye"] == "R":
+                    #print(f"Updating indices: {this_sub_run_samples.index[mask]}")
+                    dfSamples.loc[this_sub_run_samples.index[mask], "RPupil_normalized"] = interp_Rpupil
+                    
+                # if these were zeros this would cause the interpolation to fail, but they're not
+                #print(f"Pupil dilation at t1: {LPupil[y_ind_L[0]] if row['eye'] == 'L' else RPupil[y_ind_R[0]]}")
+                #print(f"Pupil dilation at t4: {LPupil[y_ind_L[1]] if row['eye'] == 'L' else RPupil[y_ind_R[1]]}")
+
+            
+    dfSamples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated.csv")
+    return dfSamples
     
 def interpolate_pupil_over_blinks(dfSamples, dfBlink, subject_num, run):
     """
@@ -682,7 +870,8 @@ def interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subjec
     dataframe of samples in place to change coordinate values to interpolated
     values, effectively removing blink artifacts. Saves interpolated data as csv.
     
-    Uses saccades to find times to interpolate over.
+    Uses saccades to find times to interpolate over. Contains adjustments recommended
+    through conversation with Dr. J.
     
     Inputs:
         - dfSamples: A dataframe containing samples for all subjects and all runs
@@ -721,7 +910,7 @@ def interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subjec
     RX = np.array(this_sub_run_samples['RX'])
     RY = np.array(this_sub_run_samples['RY'])
     # declare blink offset: 50ms added to the start and end of a blink
-    blink_off = 50
+    blink_off = 0#50
     
     # declare variables to store blink start information to merge blinks if 
     # they are too close 
@@ -747,6 +936,9 @@ def interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subjec
             
             # check if two blinks are too close to each other
             if b_end >= nb_start:
+                print("merging blinks")
+                # update blink end time if merging blinks
+                b_end = nrow["tEnd"] + blink_off
                 # merge two blinks into a longer one
                 update_start = False
                 continue
@@ -780,12 +972,14 @@ def interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subjec
         if pd.isna(t4):
             print("t4 is na, using blink duration")
             t4 = t3 + blink_dur
-        print("t1", t1, "t2", t2, "t3", t3, "t4", t4)
+        #print("t1", t1, "t2", t2, "t3", t3, "t4", t4)
         
         
         if (t1 > sample_time[0]) and (t4 < sample_time[-1]):
             # select time and pupil size for interpolation
-            x = [t1, t2, t3, t4]
+            #x = [t1, t2, t3, t4]
+            x = [t1, t4]
+            # use t1 and t4 and do linear interpolation (change for l and r)
             # interpolation for LX
             if row["eye"] == "L":
                 y_ind_LX = []
@@ -794,6 +988,9 @@ def interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subjec
                     if t in sample_time:
                         y_ind_LX.append(np.where(sample_time==t)[0][0])
                         y_ind_LY.append(np.where(sample_time==t)[0][0])
+                        #print("indLX", y_ind_LX)
+                        #print("ind_LY", y_ind_LY)
+                        #print("x", x)
                     else:
                         print(f"No exact match found for time {t}. Skipping this blink.")
                         valid_interpolation = False
@@ -801,16 +998,35 @@ def interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subjec
                     #closest_index = np.argmin(np.abs(sample_time - t))
                     #y_ind_L.append(closest_index)
                 if valid_interpolation:
-                    y_LX = LX[y_ind_LX]
-                    y_LY = LY[y_ind_LY]
-                    # generate the spl model using the time and pupil size
-                    spl_LX = CubicSpline(x, y_LX)
-                    spl_LY = CubicSpline(x, y_LY)
+                    # old method
+                    #y_LX = LX[y_ind_LX]
+                    #y_LY = LY[y_ind_LY]
+                    # get y values at t1 and t4
+                    y_LX = [LX[y_ind_LX[0]], LX[y_ind_LX[1]]]
+                    y_LY = [LY[y_ind_LY[0]], LY[y_ind_LY[1]]]
                     
-                    mask = (sample_time > t2) & (sample_time <t3)
+                    # generate the spl model using the time and pupil size
+                    #spl_LX = CubicSpline(x, y_LX)
+                    #spl_LY = CubicSpline(x, y_LY)
+                    lin_LX = interp1d(x, y_LX)
+                    lin_LY = interp1d(x, y_LY)
+
+                    
+                    # using only t1 and t4 in mask
+                    #mask = (sample_time > t2) & (sample_time <t3)
+                    #mask = (sample_time > t1) & (sample_time <t4)
+                    # base mask on closest index instead of exact
+                    idx_t1 = np.argmin(np.abs(sample_time - t1))
+                    idx_t4 = np.argmin(np.abs(sample_time - t4))
+                    mask = (sample_time > sample_time[idx_t1]) & (sample_time < sample_time[idx_t4])
+                    
                     x = sample_time[mask]
-                    interp_LX = spl_LX(x)
-                    interp_LY = spl_LY(x)
+                    #print("xmask", x)
+                    #interp_LX = spl_LX(x)
+                    #interp_LY = spl_LY(x)
+                    # linear interpolation
+                    interp_LX = lin_LX(x)
+                    interp_LY = lin_LY(x)
                     # update
                     dfSamples.loc[this_sub_run_samples.index[mask], "LX"] = interp_LX
                     dfSamples.loc[this_sub_run_samples.index[mask], "LY"] = interp_LY
@@ -832,19 +1048,206 @@ def interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subjec
                     y_RX = RX[y_ind_RX]
                     y_RY = RY[y_ind_RY]
                     # generate the spl model using the time and pupil size
-                    spl_RX = CubicSpline(x, y_RX)
-                    spl_RY = CubicSpline(x, y_RY)
+                    #spl_RX = CubicSpline(x, y_RX)
+                    #spl_RY = CubicSpline(x, y_RY)
+                    lin_RX = interp1d(x, y_RY)
+                    lin_RY = interp1d(x, y_RY)
                     
-                    mask = (sample_time > t2) & (sample_time <t3)
+                    #mask = (sample_time > t2) & (sample_time <t3)
+                    # have mask for t1 and t4
+                    #mask = (sample_time > t1) & (sample_time <t4)
+                    # base mask on closest index instead of exact
+                    idx_t1 = np.argmin(np.abs(sample_time - t1))
+                    idx_t4 = np.argmin(np.abs(sample_time - t4))
+                    mask = (sample_time > sample_time[idx_t1]) & (sample_time < sample_time[idx_t4])
                     x = sample_time[mask]
-                    interp_RX = spl_RX(x)
-                    interp_RY = spl_RY(x)
+                    #interp_RX = spl_RX(x)
+                    #interp_RY = spl_RY(x)
+                    interp_RX = lin_RX(x)
+                    interp_RY = lin_RY(x)
                     # update
                     dfSamples.loc[this_sub_run_samples.index[mask], "RX"] = interp_RX
                     dfSamples.loc[this_sub_run_samples.index[mask], "RY"] = interp_RY
 
                 
-    dfSamples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated_Pupil_Coord.csv")
+    #dfSamples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated_Pupil_Coord.csv")
+    return dfSamples
+
+def interpolate_coordinates_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subject_num, run):
+    """
+    Interpolate left and right x and y eye coordinates over blink periods. Modifies the
+    dataframe of samples in place to change coordinate values to interpolated
+    values, effectively removing blink artifacts. Saves interpolated data as csv.
+    
+    Uses saccades to find times to interpolate over. Contains adjustments recommended
+    through conversation with Dr. J.
+    
+    Inputs:
+        - dfSamples: A dataframe containing samples for all subjects and all runs
+        - dfBlink: A dataframe containing information about the eye in which a 
+        blink occured and the time that that blink occured
+        
+    Returns:
+        None.
+    """
+    # extracted from reading_analysis.py (author: HS)
+    # adjusted to work on dfs for all subjects and all runs and interpolate left and right pupil by AB
+    # https://github.com/GlassBrainLab/MindlessReadingAnalysis/blob/main/EyeAnalysisCode/reading_analysis.py
+    # interpolate the pupil size during the blink duration
+    # http://dx.doi.org/10.6084/m9.figshare.688002
+    
+    """
+    s10014 has tSample 898100, then jumps to 934682 which is why matches aren't being found.
+    this is true regardless of when rows with missing run num are dropped
+    added valid_interpolation flag to skip blinks that happen at times like this
+    
+    Run interpolation on sample csv before extracting raw samples!
+    Do for coordinates too 
+    
+    """
+    print(f"Interpolating for subject {subject_num}, run {run}")
+    # get subset for this subject and run
+    # sample data
+    this_sub_run_samples = dfSamples
+    # blink data
+    this_sub_run_blinks = dfBlink
+    # get the time of every sample
+    sample_time = this_sub_run_samples['tSample'].to_numpy()
+    #print(sample_time[10999:11999])
+    LX = np.array(this_sub_run_samples['LX'])
+    LY = np.array(this_sub_run_samples['LY'])
+    RX = np.array(this_sub_run_samples['RX'])
+    RY = np.array(this_sub_run_samples['RY'])
+
+    
+    # iterate throu each row of blink dataframe
+    print("num blinks for this subject and run: ", len(this_sub_run_blinks))
+    print("num samples for this subject and run: ", len(this_sub_run_samples))
+    for index in np.arange(len(this_sub_run_blinks)):
+        # reset flag
+        valid_interpolation = True
+        row = this_sub_run_blinks.iloc[index]
+        # get the start and end time
+        b_start = row['tStart'] 
+        b_end = row['tEnd']
+            
+
+        
+        # get the blink duration
+        blink_dur = b_end - b_start
+
+
+        # set t1 to be the end time of the last saccade before the blink
+        #get all saccades before this blink
+        previous_saccades = dfSaccades[dfSaccades["tEnd"] < b_start]
+        # get last saccade before this blink
+        last_saccade_tEnd = previous_saccades["tEnd"].max()
+        # set t4 to be the start time of the first saccade after the blink
+        # get all saccades after this blink
+        later_saccades = dfSaccades[dfSaccades["tStart"] > b_end]
+        # get the first saccade after this blink
+        first_saccade_tStart = later_saccades["tStart"].min()
+        t1 = last_saccade_tEnd
+        t4 = first_saccade_tStart
+        # check for missing vals in t1 or t4 and use buffer as fallback
+        if pd.isna(t1):
+            print("t1 is na, using blink duration")
+            t1 = b_start
+        if pd.isna(t4):
+            print("t4 is na, using blink duration")
+            t4 = b_end
+        #print("t1", t1, "t2", t2, "t3", t3, "t4", t4)
+        
+        
+        if (t1 > sample_time[0]) and (t4 < sample_time[-1]):
+            # select time and pupil size for interpolation
+            #x = [t1, t2, t3, t4]
+            x = [t1, t4]
+            # use t1 and t4 and do linear interpolation (change for l and r)
+            # interpolation for LX
+            if row["eye"] == "L":
+                y_ind_LX = []
+                y_ind_LY = []
+                for t in x:
+                    if t in sample_time:
+                        y_ind_LX.append(np.where(sample_time==t)[0][0])
+                        y_ind_LY.append(np.where(sample_time==t)[0][0])
+                        #print("indLX", y_ind_LX)
+                        #print("ind_LY", y_ind_LY)
+                        #print("x", x)
+                    else:
+                        print(f"No exact match found for time {t}. Skipping this blink.")
+                        valid_interpolation = False
+                        break 
+                    #closest_index = np.argmin(np.abs(sample_time - t))
+                    #y_ind_L.append(closest_index)
+                if valid_interpolation:
+                    # old method
+                    #y_LX = LX[y_ind_LX]
+                    #y_LY = LY[y_ind_LY]
+                    # get y values at t1 and t4
+                    y_LX = [LX[y_ind_LX[0]], LX[y_ind_LX[1]]]
+                    y_LY = [LY[y_ind_LY[0]], LY[y_ind_LY[1]]]
+                    
+                    # generate the spl model using the time and pupil size
+                    #spl_LX = CubicSpline(x, y_LX)
+                    #spl_LY = CubicSpline(x, y_LY)
+                    lin_LX = interp1d(x, y_LX)
+                    lin_LY = interp1d(x, y_LY)
+
+                    
+                    # using only t1 and t4 in mask
+                    #mask = (sample_time > t2) & (sample_time <t3)
+                    mask = (sample_time > t1) & (sample_time <t4)
+                    
+                    x = sample_time[mask]
+                    #print("xmask", x)
+                    #interp_LX = spl_LX(x)
+                    #interp_LY = spl_LY(x)
+                    # linear interpolation
+                    interp_LX = lin_LX(x)
+                    interp_LY = lin_LY(x)
+                    # update
+                    dfSamples.loc[this_sub_run_samples.index[mask], "LX"] = interp_LX
+                    dfSamples.loc[this_sub_run_samples.index[mask], "LY"] = interp_LY
+            # interpolation for Rpupil
+            if row["eye"] == "R":
+                y_ind_RX = []
+                y_ind_RY = []
+                for t in x:
+                    if t in sample_time:
+                    #closest_index = np.argmin(np.abs(sample_time - t))
+                        y_ind_RX.append(np.where(sample_time==t)[0][0])
+                        y_ind_RY.append(np.where(sample_time==t)[0][0])
+                    else:
+                        print(f"No exact match found for time {t}. Skipping this blink.")
+                        valid_interpolation = False
+                        break 
+                    #y_ind_R.append(closest_index)
+                if valid_interpolation:
+                    y_RX = RX[y_ind_RX]
+                    y_RY = RY[y_ind_RY]
+                    # generate the spl model using the time and pupil size
+                    #spl_RX = CubicSpline(x, y_RX)
+                    #spl_RY = CubicSpline(x, y_RY)
+                    lin_RX = interp1d(x, y_RY)
+                    lin_RY = interp1d(x, y_RY)
+                    
+                    #mask = (sample_time > t2) & (sample_time <t3)
+                    # have mask for t1 and t4
+                    mask = (sample_time > t1) & (sample_time <t4)
+                    x = sample_time[mask]
+                    #interp_RX = spl_RX(x)
+                    #interp_RY = spl_RY(x)
+                    interp_RX = lin_RX(x)
+                    interp_RY = lin_RY(x)
+                    # update
+                    dfSamples.loc[this_sub_run_samples.index[mask], "RX"] = interp_RX
+                    dfSamples.loc[this_sub_run_samples.index[mask], "RY"] = interp_RY
+
+                
+    #dfSamples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated_Pupil_Coord.csv")
+    return dfSamples
 
 def preprocess(dfSamples):
     """
@@ -874,8 +1277,8 @@ def preprocess(dfSamples):
                                                        'run_num'])['tSample'].transform(lambda x: x - x.min())
     print("tSample_normalized has been created.")
     
-    # normalize pupils
-    dfSamples = normalize_pupil(dfSamples)
+    # normalize pupils - done before interpolation, don't do again
+    #dfSamples = normalize_pupil(dfSamples)
     
     # make subject values strings
     dfSamples["Subject"] = dfSamples["Subject"].astype(str)
@@ -898,7 +1301,7 @@ def correlation_heatmap(dfSamples):
     """
     # get rid of subject and sample id
     data = dfSamples[["tSample_normalized", "RX", "RY", "RPupil_normalized",
-                      "LX", "LY", "LPupil_normalized", "Lblink", "Rblink", "is_MW"]]
+                      "LX", "LY", "LPupil_normalized", "is_MW"]]#"Lblink", "Rblink", "is_MW"]]
     
     corr_matrix = data.corr()
     
@@ -2024,11 +2427,8 @@ dfSamples = pd.concat(chunks,ignore_index=True)
 dfSamples.drop(subset="Unnamed: 0", axis=1, inplace=True)
 
 #%%
-#%% CURRENT STARTS HERE
-# same issues with missing blinks and r pupil were present with saccades implementation
-# switched back to without using saccades here but also normalized before interpolating pupil
-
-# maybe try again without normalizing first?
+#%% CURRENT STARTS HERE 10/21
+# no forward fill, use saccades, no s10127
 
 subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125]
@@ -2050,9 +2450,21 @@ for subject_num in subjects:
         dfSamples = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{sample_file}")
         dfSamples = normalize_pupil_pre_interp(dfSamples)
         dfBlink = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{blink_file}")
-        interpolate_pupil_over_blinks(dfSamples, dfBlink, subject_str, run_num)
+        matching_saccade_filenames = [file for file in filenames if (file.endswith("Saccade.csv") and not file.startswith("._"))]
+        saccade_file = matching_saccade_filenames[0]
+        print("saccade file", saccade_file)
+        dfSaccades = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{saccade_file}")
+        # coordinate interpolation
+        dfSamples = interpolate_coordinates_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
+        # pupil interpolation
+        dfSamples = interpolate_pupil_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
+        print("LPupil min")
+        print(dfSamples["LPupil_normalized"].min())
+        print("RPupil min")
+        print(dfSamples["RPupil_normalized"].min())
         
-# coordinate interpolation with forward fill first
+"""
+# coordinate interpolation without forward fill first
 for subject_num in subjects:
     for run_num in range(1,6):
         subject_str = str(subject_num)
@@ -2063,38 +2475,47 @@ for subject_num in subjects:
         matching_blink_filenames = [file for file in filenames if (file.endswith("Blink.csv") and not file.startswith("._"))]
         blink_file = matching_blink_filenames[0]
         print("blink file", blink_file)
+        matching_saccade_filenames = [file for file in filenames if (file.endswith("Saccade.csv") and not file.startswith("._"))]
+        saccade_file = matching_saccade_filenames[0]
+        print("saccade file", saccade_file)
         # feed in file that already had pupil interpolation
         dfSamples = pd.read_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated.csv")
         dfBlink = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{blink_file}")
 
         # forward fill missing coordinates
-        dfSamples[["LX", "LY", "RX", "RY"]] = dfSamples[["LX", "LY", "RX", "RY"]].fillna(method="ffill")
+        #dfSamples[["LX", "LY", "RX", "RY"]] = dfSamples[["LX", "LY", "RX", "RY"]].fillna(method="ffill")
 
         # interpolate
-        interpolate_coordinates_over_blinks(dfSamples, dfBlink, subject_str, run_num)
-
-# extract interpolated_pupil_coord
+        interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
+"""
+# extract interpolated from
+# /Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated.csv
 for subject in subjects:
     folder_path = f"/Volumes/Lexar/CSV_Samples/{subject}"
     extract(subject, folder_path)
     
-#%%
-# start here after class, load in raw_interpolated_pupil coord (should already be set up to do thos)
-# preprocess
-
+# now files are at /Volumes/Lexar/MW_Classifier_Data/{sub_id}_raw.csv
+    
+#%%%
+# start here to save csv no need to regenerate plots
 subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125]
 data_path = "/Volumes/Lexar/MW_Classifier_Data/"
 dfSamples = load_raw_samples(data_path, subjects)
 dfSamples = preprocess(dfSamples)
-print(dfSamples.columns)
 
 #%%
+print(dfSamples.columns)
+
+
+print(dfSamples["Subject"])
+
+
 print(dfSamples["LPupil_normalized"].min())
 print(dfSamples["RPupil_normalized"].min())
 
 # drop cols if needed
-dfSamples = dfSamples.drop(["Unnamed: 0.1", "Unnamed: 0", "LPupil", "RPupil"], axis=1)
+#dfSamples = dfSamples.drop(["Unnamed: 0", "LPupil", "RPupil"], axis=1)
 
 # consider replacing 0s with na and forward filling? prior to interpolation
 # both of these are 0 :( 
@@ -2115,9 +2536,20 @@ eye_coordinates(dfSamples, subjects)
 print("coord over time")
 coord_over_time(dfSamples)
 
+#%% check for missing values
+
+print(dfSamples.isna().sum())
+print(dfSamples.columns)
+#%%
+# drop rows with missing coordinate values
+dfSamples = dfSamples.dropna()
 #%% 
-# save to csv
-dfSamples.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated_pupil_coord.csv")
+# drop unnecessary cols
+#dfSamples = dfSamples.drop(columns=["LPupil", "RPupil", "Unnamed: 0"])
+# save to csv in netfiles
+#dfSamples.to_csv("/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated.csv")
+# and lexar
+dfSamples.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated.csv")
 #%% 
 print(dfSamples["Subject"])
 
