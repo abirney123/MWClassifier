@@ -19,7 +19,7 @@ def extract_raw(sub_id, folder_path):
         for filename in files:
             # Check if the file ends with 'sample.csv'
             # change this if doing coordinate interpolation too
-            if not filename.startswith('._') and filename.endswith("Sample_Interpolated_Pupil_Coord.csv"):
+            if not filename.startswith('._') and filename.endswith("Sample_Interpolated.csv"):
                 file_path = os.path.join(root, filename)
                 # Read the CSV file into a DataFrame
                 file_paths.append(file_path)
@@ -105,4 +105,4 @@ def extract_raw(sub_id, folder_path):
         # concat current DF (trunc) with full DF
         df_all_samples = pd.concat([df_all_samples, df_sample_trunc])
     # write full DF to CSV
-    df_all_samples.to_csv(f'/Volumes/Lexar/MW_Classifier_Data/{sub_id}_raw_interpolated_pupil_coord.csv', index=False)
+    df_all_samples.to_csv(f'/Volumes/Lexar/MW_Classifier_Data/{sub_id}_raw.csv', index=False)
