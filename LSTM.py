@@ -22,7 +22,7 @@ from datetime import datetime
 import os
 from sklearn.preprocessing import StandardScaler
 import time
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, precision_score, recall_score
 import seaborn as sn
 
 #%%
@@ -84,16 +84,41 @@ def split_data(dfSamples):
     print("Mean of is_MW in test set: ", test_mw_p)
     return train_data, test_data
 
+def combine_records(df :pd.DataFrame) ->pd.DataFrame:
+    # written by Omar Awajan, adapted by Alaina Birney
+    # create mask where True means curr row is different from previous row
+    # across all feature columns
+    mask = ( 
+        (df['LX'] != df['LX'].shift()) 
+        & (df['LY'] != df['LY'].shift()) 
+        & (df['LPupil_normalized'] != df['LPupil_normalized'].shift()) 
+        & (df['RX'] != df['RX'].shift()) 
+        & (df['RY'] != df['RY'].shift()) 
+        & (df['RPupil_normalized'] != df['RPupil_normalized'].shift())
+        & (df["Lblink"] != df["Lblink"].shift())
+        & (df["Rblink"] != df["Rblink"].shift())
+        )
+    # Group duplicates 
+    df['combined'] = mask.cumsum()
+    # filter to get the first occurance of each combined group
+    df_filtered = df.loc[df.groupby("combined").head(1).index]
+    # drop combined column
+    df_filtered = df_filtered.drop(columns=["combined"])
+    return df_filtered
+
 def add_padding(batch):
     # unpack inputs and labels
     (inputs, labels) = zip(*batch)
+    
+    # calculate lengths of unpadded sequences (for masking)
+    seq_lens = torch.tensor([len(inp) for inp in inputs])
     # add padding to match sequence length, convert input to tensor first
     # pad sequence adds zero padding to match largest sequence in batch
     padded_inputs = pad_sequence([inp.clone().detach() if isinstance(inp, torch.Tensor) else torch.tensor(inp) for inp in inputs], batch_first=True)
     padded_labels = pad_sequence([lbl.clone().detach() if isinstance(lbl, torch.Tensor) else torch.tensor(lbl) for lbl in labels], batch_first=True)
-    return padded_inputs, padded_labels
+    return padded_inputs, padded_labels, seq_lens
 
-# define custom DataLoader class
+# define custom Dataset class
 class WindowedTimeSeriesDataset(Dataset):
     def __init__(self, data, sequence_length=4000, step_size=1000, scaler=None, fit_scaler=False, columns_to_scale=None):
         """
@@ -155,6 +180,7 @@ class WindowedTimeSeriesDataset(Dataset):
         x = self.features[start_idx:end_idx]
         # get corresponding labels (same length as sequence because many to many)
         y = self.labels[start_idx:end_idx]
+        
         """
         # results in a bunch of sequences full of 0s after minibatch 501
         if len(x) < sequence_length:
@@ -167,29 +193,45 @@ class WindowedTimeSeriesDataset(Dataset):
 # define LSTM class
 
 class LSTMModel(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, output_size):
+    def __init__(self, input_size, hidden_size, num_layers, output_size,
+                 dropout_p = .3):
         super(LSTMModel, self).__init__()
         # LSTM takes input tensor of shape (batch_size, sequence_length, input_size)
         # bidirectional lstm with batch as first dimension
         self.lstm = torch.nn.LSTM(input_size=input_size, hidden_size=hidden_size,
-                                  num_layers=num_layers, batch_first=True, bidirectional=True)
+                                  num_layers=num_layers, batch_first=True,
+                                  bidirectional=True, dropout = dropout_p)
         self.fc = torch.nn.Linear(hidden_size*2, hidden_size*2)
         self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_p)
+        self.fc2 = torch.nn.Linear(hidden_size*2, hidden_size*2)
+        self.relu2 = nn.ReLU()
         # fc should be hidden size *2 because bidirectional - map hidden state to output size
-        self.fc2 = torch.nn.Linear(hidden_size*2, output_size)
-    def forward(self,x):
+        self.fc3 = torch.nn.Linear(hidden_size*2, output_size)
+    def forward(self,x, seq_lens):
         # x shape: (batch size, sequence length, number of features)
-        out, _ = self.lstm(x)
+        # pack padded sequences - parameters (input, sequence lengths (must be on cpu), 
+        # batch first to match input order, enforce sorted False because seqs aren't sorted
+        # by length in decreasing order necessarily)
+        packed_x = torch.nn.utils.rnn.pack_padded_sequence(x, seq_lens.cpu(),
+                                                               batch_first=True, enforce_sorted=False)
+        #out, _ = self.lstm(x)
+        # feed lstm packed input
+        packed_out, _ = self.lstm(packed_x)
+        # unpack output
+        out, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True) 
         out = self.fc(out)
         out = self.relu(out)
+        out = self.dropout(out)
         out = self.fc2(out)
+        out = self.relu2(out)
+        out = self.fc3(out)
         return out
 
 #%%
 
-#file_path = "/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated_pupil_coord.csv"
-#file_path = "E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil_coord.csv"
-file_path = "E:\\MW_Classifier_Data\\all_sub_no_interp_with_blink.csv"
+
+file_path = "E:\\MW_Classifier_Data\\all_subjects_interpolated.csv"
 dfSamples = load_data(file_path)
 
 #%%
@@ -197,15 +239,32 @@ dfSamples = load_data(file_path)
 print(dfSamples.dtypes)
 print(dfSamples.isna().sum())
 
-counts = dfSamples.groupby(["Subject", "run_num"]).size().reset_index(name='counts')
+#counts = dfSamples.groupby(["Subject", "run_num"]).size().reset_index(name='counts')
 
 # Display the counts for each subject-run pair
-print(counts)
-rare_cases = counts[counts["counts"] < 2]
-print("Subject-Run pairs with fewer than 2 rows of data:")
-print(rare_cases)
-#%%
+#print(counts)
+#rare_cases = counts[counts["counts"] < 2]
+#print("Subject-Run pairs with fewer than 2 rows of data:")
+#print(rare_cases)
 
+
+#%%
+"""
+not using this rn, results in too few instances of mw
+# combine duplicate rows
+print("df samples length before combining duplicates")
+print(len(dfSamples))
+print("mw instances before combining duplicates")
+samples_mw_count = dfSamples['is_MW'].sum()
+print(samples_mw_count)
+
+dfSamples = combine_records(dfSamples)
+print("df samples length after combining duplicates")
+print(len(dfSamples))
+print("mw instances after combining duplicates")
+samples_mw_count = dfSamples['is_MW'].sum()
+print(samples_mw_count)
+"""
 # train test split
 # do subject-wise train test split to ensure model generalizes well to new subjects
 train_data, test_data = split_data(dfSamples)
@@ -218,7 +277,7 @@ test_data = test_data.drop(columns=["page_num", "run_num", "sample_id",
                                     "tSample", "Subject", "tSample_normalized",
                                     "mw_proportion", "mw_bin"])
 
-
+print(train_data.columns)
 
 #%%
 # find mean mw duration in train set
@@ -236,7 +295,7 @@ print(mean_mw_dur)
 #%%
 # create datasets
 # set parameters
-sequence_length = 4000 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
+sequence_length = 2500 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
 # might have been suffering from vanishing gradient with 4k and 8k
 step_size = 250
 columns_to_scale = ["LX", "LY", "RX", "RY"]
@@ -244,9 +303,13 @@ columns_to_scale = ["LX", "LY", "RX", "RY"]
 scaler = StandardScaler()
 # instantiate - scaling applied in dataset class
 train_dataset = WindowedTimeSeriesDataset(train_data, sequence_length,
-                                          step_size, scaler = scaler, fit_scaler = True, columns_to_scale = columns_to_scale)
+                                          step_size, scaler = scaler,
+                                          fit_scaler = True,
+                                          columns_to_scale = columns_to_scale)
 test_dataset = WindowedTimeSeriesDataset(test_data, sequence_length,
-                                         step_size,scaler = scaler, fit_scaler = False, columns_to_scale = columns_to_scale)
+                                         step_size,scaler = scaler,
+                                         fit_scaler = False,
+                                         columns_to_scale = columns_to_scale)
 # num sequencecs for training
 print(len(train_dataset))
 
@@ -258,13 +321,16 @@ majority_labels = []
 i = 1
 print("calculating majority labels")
 for idx, (_, sequence_labels) in enumerate(train_dataset):
-    if len(sequence_labels) == 0:
+   #if len(sequence_labels) == 0:
+    #   break
+    if idx >= len(train_dataset):
         break
     print(f"iteration {i} of {len(train_dataset)}")
+    print(f"idx is {idx} and dataset length is {len(train_dataset)}")
     print(f"Start index: {idx * step_size}, End index: {idx * step_size + sequence_length}")
     print(f"Shape of sequence_labels: {sequence_labels.shape}")
     # using .5 threshold- if more than half the labels in the sequence are mw, label sequence as mw
-    majority_label = (sequence_labels.sum() > (len(sequence_labels) // 2)).int().item()
+    majority_label = (sequence_labels.sum() > (len(sequence_labels) //2)).int().item()
     majority_labels.append(majority_label)
     i+=1
     
@@ -284,16 +350,20 @@ print("instantiating sampler")
 weighted_sampler = WeightedRandomSampler(weights=sequence_weights,
                                          num_samples = len(sequence_weights), replacement=True)
 # len majority labels should match len train_dataset
+if len(majority_labels) != len(train_dataset):
+    print("Mismatch between size of majority labels and dataset")
+    print("Majority labels length:", len(majority_labels))
+    print("Train datset length:", len(train_dataset))
 #%%
 # create DataLoaders - no shuffling as this is time series data
 # specify num workers?
 # use collate fntn to add padding when sequences vary in length (we have more
 # samples for some subjects than others) - removing bc no longer necessary i think collate_fn=add_padding
-trainloader = DataLoader(train_dataset, batch_size = 64, collate_fn = add_padding, 
-                         shuffle=False, sampler=weighted_sampler)
+trainloader = DataLoader(train_dataset, batch_size = 128, shuffle=False,
+                         sampler=weighted_sampler, collate_fn = add_padding)
 
-testloader = DataLoader(test_dataset, batch_size = 64, collate_fn = add_padding, 
-                        shuffle=False)
+testloader = DataLoader(test_dataset, batch_size = 128, shuffle=False, 
+                        collate_fn = add_padding)
 
 """
 for i, (inputs, labels) in enumerate(trainloader):
@@ -306,6 +376,8 @@ for i, (inputs, labels) in enumerate(trainloader):
 #%%
 # get sense of how imbalanced classes are - change pos weight if necessary!
 
+# this is without weighted random sampler
+"""
 # get mw in train
 train_mw_count = train_data['is_MW'].sum()
 train_non_mw_count = len(train_data) - train_mw_count
@@ -320,11 +392,29 @@ print(f"Training Set Ratio (MW/Non-MW): {train_mw_count / train_non_mw_count:.2f
 
 print(f"Test Set: Mind Wandering: {test_mw_count}, Not Mind Wandering: {test_non_mw_count}")
 print(f"Test Set Ratio (MW/Non-MW): {test_mw_count / test_non_mw_count:.2f}")
-
+"""
 # imbalance is similar in train and test, but heavy in both (~10% of each dataset is MW)
 # use weighted loss function to penalize more for incorrect predictions on minority class (MW)
 # training set ratio MW/not MW = 2838679/30675671 (pre subject stratification)
 # post subject stratification Mind Wandering: 2830876, Not Mind Wandering: 29478085
+
+# with weighted random sampler
+train_mw_count = 0
+train_non_mw_count = 0
+for i,(inputs,labels, seq_lens) in enumerate(trainloader):
+    mw_count = (labels==1).sum().item()
+    non_mw_count = (labels==0).sum().item()
+    
+    train_mw_count += mw_count
+    train_non_mw_count += non_mw_count
+    
+    
+print("MW:", train_mw_count)
+print("Non MW: ", train_non_mw_count)
+
+# classes are still slightly imbalanced after using weighted random sampler
+# maybe try including pos weight as well once best sequence length is found
+
 #%%
 # sliding window - applied during training data preparation
 print(torch.__version__)            # Check PyTorch version
@@ -360,22 +450,23 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 max_grad_norm = 1.0
 
 input_size = len(train_data.columns)-1 # num features per timestep, num columns in train or test -1 for labels
-hidden_size = 256 # can afford to go bigger bc of our dataset size, but lets start here
-num_layers = 2 # more than 3 isn't usually valuable, starting with 1
+hidden_size = 128#256
+num_layers = 1 #2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
-num_epochs = 25
+num_epochs = 25 
 lr = .001
 # following pos weight is for sequence len 4k batch size 64 step size 500- double check before using again though, might have been typo to have 1 on the end for not mw
 #pos_weight = torch.tensor([294780851/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
 # for seq len 8k, batch size 32, step size 250
 #pos_weight = torch.tensor([29478085/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
 #pos_weight = torch.tensor([31001855/2883141]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
+pos_weight = torch.tensor([180176844/158628156]).to(device)
 
 # instantiate LSTM and move to GPU
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 
-#criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight) # BCE with logits bc binary classification
-criterion = nn.BCEWithLogitsLoss()
+criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight) # BCE with logits bc binary classification
+#criterion = nn.BCEWithLogitsLoss()
 # pos weight to help with class imbalance
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -390,20 +481,21 @@ for epoch in range(num_epochs):
     model.train() # put in training mode
     running_loss = 0.0
     epoch_start_time = time.time()
-    for i, (inputs,labels) in enumerate(trainloader):
+    for i, (inputs,labels, seq_lens) in enumerate(trainloader):
         inputs = inputs.to(device)
         labels = labels.to(device)
+        seq_lens = seq_lens.to(device)
         
         # zero gradients for this batch
         optimizer.zero_grad()
         # forward prop - dont need signmoid bc included in loss fntn
-        outputs = model(inputs)
+        outputs = model(inputs, seq_lens) # pass sequence lengths as well for packing padding
         # reshape labels to calculate loss
         loss = criterion(outputs, labels.unsqueeze(-1))
         #backprop
         loss.backward()
-        # apply gradient clipping
-        torch.nn.utils.clip_grad_norm(model.parameters(), max_grad_norm)
+        # apply gradient clipping to LSTM layer only
+        torch.nn.utils.clip_grad_norm(model.lstm.parameters(), max_grad_norm)
         optimizer.step()
         
         # accumulate loss
@@ -425,7 +517,8 @@ for epoch in range(num_epochs):
 print("Training Complete")
 
 # save the model
-save_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier.pth"
+curr_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+save_path = f"C:\\Users\\abirn\\OneDrive\\Desktop\\Models\\MW_Classifier{curr_datetime}.pth"
 torch.save(model.state_dict(), save_path)
 print("Model saved to ", save_path)
 
@@ -435,16 +528,18 @@ plt.title("Training Loss Over Epochs")
 plt.xlabel("Epochs")
 plt.ylabel("Average Loss")
 # get datetime for saving fig
-curr_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
 plt.savefig(f"C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\plots\\LSTM_loss_{curr_datetime}.png")
 plt.show()
 
     
 #%% Load saved model if needed
-model_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier.pth"
+
+# replace curr_datetime with datetime model was saved
+model_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\Models\\MW_Classifier{curr_datetime}.pth"
 input_size = len(train_data.columns)-1 # num features per timestep, num columns in train or test -1 for labels
-hidden_size = 128 # can afford to go bigger bc of our dataset size, but lets start here
-num_layers = 2 # more than 3 isn't usually valuable, starting with 1
+hidden_size = 128 #256 
+num_layers = 1#2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 model.load_state_dict(torch.load(model_path))
@@ -470,22 +565,23 @@ mcc = MatthewsCorrCoef(task="binary")
 
 for i, data in enumerate(testloader):
     with torch.no_grad(): # disable gradient calculation
-        inputs, labels = data
+        inputs, labels, seq_lens = data
         inputs = inputs.to(device)
         labels = labels.to(device)
+        seq_lens = seq_lens.to(device)
         
         # forward prop
-        outputs = model(inputs)
-        y_probs = torch.sigmoid(outputs)
+        outputs = model(inputs, seq_lens)
+        #y_probs = torch.sigmoid(outputs)
         # convert probs to predictions with .5 threshold
-        y_preds = (y_probs >= .5).float()
+        y_preds = (outputs >= .5).float()
         # remove extra dimension from predictions
         y_preds = y_preds.squeeze(-1)
         
         # add predictions and labels to lists
         all_predictions.append(y_preds.cpu())
         all_labels.append(labels.cpu())
-        all_probabilities.append(y_probs.cpu())
+        all_probabilities.append(outputs.cpu())
         
 
         # flatten predictions and labels
@@ -534,6 +630,11 @@ curr_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 plt.savefig(f"C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\plots\\LSTM_confmatrix_{curr_datetime}.png")
 
+precision = precision_score(flat_labs, flat_predictions)
+recall = recall_score(flat_labs, flat_predictions)
+
+print(f"Precision: {precision}")
+print(f"Recall: {recall}")
 # mcc
 mcc_score = mcc(all_predictions, all_labels)
 print("MCC", mcc_score)
