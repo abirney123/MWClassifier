@@ -20,8 +20,6 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from sklearn.model_selection import train_test_split, LeaveOneGroupOut
 import torch.nn as nn
 import torch.optim as optim
-from torchmetrics import F1Score, AUROC, MatthewsCorrCoef
-from torcheval.metrics import BinaryAUROC
 from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 import matplotlib.pyplot as plt
@@ -29,8 +27,6 @@ from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 import time
 import os
-from sklearn.metrics import confusion_matrix, precision_score, recall_score
-import seaborn as sn
 
 
 
@@ -49,7 +45,7 @@ def load_data(file_path, chunksize = 500000):
     dfSamples = pd.concat(chunks,ignore_index=True)
     # drop unnamed 0 if present
     if "Unnamed: 0" in dfSamples.columns:
-        dfSamples.drop("Unnamed: 0", axis=1, inplace=True)
+        dfSamples.drop(labels=["Unnamed: 0"], axis=1, inplace=True)
     return dfSamples
 
 def split_data(dfSamples):
@@ -106,7 +102,7 @@ def combine_records(df :pd.DataFrame) ->pd.DataFrame:
     # filter to get the first occurance of each combined group
     df_filtered = df.loc[df.groupby("combined").head(1).index]
     # drop combined column
-    df_filtered = df_filtered.drop(columns=["combined"])
+    df_filtered = df_filtered.drop(labels=["combined"], axis=1)
     return df_filtered
 
 def add_padding(batch):
@@ -146,9 +142,9 @@ class WindowedTimeSeriesDataset(Dataset):
             
         # separate features and labels
         # exclude non feature columns from features, but keep in dataset for logocv
-        self.features = data.drop(columns=["is_MW", "page_num", "run_num",
-                                           "sample_id","tSample", "Subject", 
-                                           "tSample_normalized", "mw_proportion", "mw_bin"]).values
+        self.features = data.drop(labels=["is_MW", "page_num", "run_num","sample_id",
+                                   "tSample", "Subject", "tSample_normalized",
+                                   "mw_proportion", "mw_bin"], axis=1).values
         self.labels = data["is_MW"].values
         
 
@@ -246,10 +242,11 @@ class LSTMModel(torch.nn.Module):
         return out
 
 
-# change this to path to data on mounted netfiles
 file_path = "./all_subjects_interpolated.csv"
-dfSamples = load_data(file_path)
-
+if not os.path.exists(file_path):
+    print(f"Error: Data file not found at {file_path}")
+#dfSamples = load_data(file_path)
+dfSamples=pd.read_csv(file_path)
 
 # train test split
 # do subject-wise train test split to ensure model generalizes well to new subjects
