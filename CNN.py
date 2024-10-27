@@ -40,10 +40,10 @@ def combine_records(df :pd.DataFrame) ->pd.DataFrame:
  
 # this is how I changed it. Sure thing let me just grab my headphones
 
-def get_label(df :pd.DataFrame) -> bool:
+def get_label(df :pd.DataFrame) -> float:
     counts = df['is_MW'].value_counts()
     if (len(counts.keys()) == 1):
-        return bool(counts.keys()[0])
+        return counts.keys()[0]
     ratio = counts.iloc[1]/counts.iloc[0]
     if (ratio > 0.50) & (counts.keys()[0] == 1):
         return 1
@@ -56,7 +56,7 @@ def sliding_window(df :pd.DataFrame, window_size :int=2000, step_size :int=500):
     df = df.ffill()
     num_columns = df.shape[1]-1
     windows :list[pd.DataFrame]= []
-    labels :list[bool]= []
+    labels :list[float]= []
     while start < len(df):
         end = start + window_size
         window = df.iloc[start:end]
@@ -97,26 +97,29 @@ class MWDataSet(Dataset):
 
 
 class CNNModel(nn.Module):
-    def __init__(self, size=12000):
+    def __init__(self, size=8000):
         super(CNNModel, self).__init__()
 
         # 1D Convolution layer with a single layer
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=6,stride=6, padding=0)
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=5, padding=0, stride=5) 
         
-        self.final_size = (size - 6) + 1  # Final size after conv layer
+        # Final size after conv layer
+        self.final_size = ((size - 5) // 5) + 1
         
         # Fully connected layers
         self.fc1 = nn.Linear(32 * self.final_size, 64)
         self.fc2 = nn.Linear(64, 64)
         self.fc3 = nn.Linear(64, 64)
         self.fc4 = nn.Linear(64, 32)
-        self.fc5 = nn.Linear(32, 1)  # Output layer for binary classification
+        self.fc5 = nn.Linear(32, 1)  # Output layer
 
     def forward(self, x):
+        #print(f"input shape: {x.shape}")
         out = self.conv1(x)
+        #print(f"post conv input shape: {x.shape}")
         out = F.relu(out)
-        out = out.view(out.size(0), -1)
-        
+        out = out.view(out.size(0), -1)  # Flatten the tensor
+        #print(f"flattened input shape: {x.shape}")        
         # Forward pass through fully connected layers
         out = self.fc1(out)
         out = F.relu(out)
@@ -127,13 +130,11 @@ class CNNModel(nn.Module):
         out = self.fc4(out)
         out = F.relu(out)
         out = self.fc5(out)
-        # Apply sigmoid activation for binary classification
-        # out = torch.sigmoid(out)
 
         return out
 
 '''
-    ['Unnamed: 0', 'tSample', 'LX', 'LY', 'LPupil', 'RX', 'RY', 'RPupil',
+    ['', 'tSample', 'LX', 'LY', 'LPupil', 'RX', 'RY', 'RPupil',
        'page_num', 'run_num', 'is_MW', 'sample_id', 'Subject',
        'tSample_normalized']
 '''
@@ -141,7 +142,7 @@ def data_loader(filepath :str):
 
     # Load dataset and drop irrelevant columns
     df :pd.DataFrame = pd.read_csv(filepath)
-    df.drop(columns=['Unnamed: 0', 'page_num', 'tSample','run_num','sample_id','tSample_normalized'], inplace=True)
+    df.drop(columns=['Unnamed: 0', 'page_num', 'tSample','run_num','LPupil_normalized','RPupil_normalized', 'sample_id','tSample_normalized'], inplace=True)
     
     #split DataSet by Subject
     subjectList :list[str] = df['Subject'].value_counts().keys()
@@ -151,15 +152,10 @@ def data_loader(filepath :str):
     testSubjects :pd.DataFrame = df[df['Subject'].isin(subjectList[trainSize:])]
     trainSubjects.drop(columns=['Subject'],inplace=True)
     testSubjects.drop(columns=['Subject'], inplace=True)
-    print(trainSubjects.duplicated().sum())
-    exit()
-    
-    print(trainSubjects.shape)
-    trainSubjects = combine_records(trainSubjects)
-    print(trainSubjects.shape)
-    exit()
+    # trainSubjects = combine_records(trainSubjects)
     # testSubjects = combine_records(testSubjects)
-
+    print(trainSubjects.shape)
+    print(testSubjects.shape)
     training_windows, training_labels = sliding_window(trainSubjects)
     testing_windows, testing_labels = sliding_window(testSubjects)
     
@@ -179,12 +175,12 @@ def CNN()->None:
     batch = 10
 
     # prepare dataset for model learning
-    file_path = "D:\\all_subjects_data_no_interpolation.csv"
+    file_path = r"Z:\Mindless Reading\neuralnet_classifier\all_subjects_interpolated.csv" # "D:\\all_subjects_data_no_interpolation.csv"
     training_windows, training_labels, testing_windows, testing_labels = data_loader(file_path)
     
     train_dataset = MWDataSet(features=training_windows, labels=training_labels)
     test_dataset = MWDataSet(features=testing_windows, labels=testing_labels)
-    
+
     train_loader = DataLoader(train_dataset,batch_size=batch,shuffle=False)
     test_loader = DataLoader(test_dataset,batch_size=batch,shuffle=False)    
 
@@ -237,15 +233,25 @@ def CNN()->None:
     predicted_classes = (all_outputs >= 0.5).long().view(-1).cpu().numpy()
     true_classes = all_labels.view(-1).cpu().numpy()
     
-    accuracy = accuracy_score(true_classes, predicted_classes)
-    precision = precision_score(true_classes, predicted_classes)
-    recall = recall_score(true_classes, predicted_classes)
-    f1 = f1_score(true_classes, predicted_classes)
+    accuracy = BinaryAccuracy(true_classes, predicted_classes, threshold=0.5)
+    auroc = BinaryAUROC(true_classes, predicted_classes)
+    precision = BinaryPrecision(true_classes, predicted_classes)
+    confusionmatrix = BinaryConfusionMatrix(true_classes, predicted_classes)
+    f1score = BinaryF1Score(true_classes, predicted_classes)
+    corr_coef = BinaryMatthewsCorrCoef(true_classes, predicted_classes)
+    precision_recallcurve = BinaryPrecisionRecallCurve(true_classes, predicted_classes)
+    recall = BinaryRecall(true_classes, predicted_classes)
+
+
 
     print(f'Accuracy: {accuracy:.4f}')
+    print(f'AUROC: {auroc:.4f}')
     print(f'Precision: {precision:.4f}')
     print(f'Recall: {recall:.4f}')
-    print(f'F1-Score: {f1:.4f}')
+    print(f'F1-Score: {f1score:.4f}')
+    print(f'confusion matrix: {confusionmatrix}')
+    print(f'correlation coff: {corr_coef}')
+    print(f'precision recall curve: {precision_recallcurve}')
 
 
 
