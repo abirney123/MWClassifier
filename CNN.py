@@ -94,8 +94,8 @@ def sliding_window(df :pd.DataFrame, window_size :int=2500, step_size :int=250):
 
     return windows,labels
 
-def duplicate(dataset) -> torch.utils.data.Dataset:
-    """Function to balance dataset by duplicating minority class instances."""
+def duplicate(dataset :torch.utils.data.Dataset) -> torch.utils.data.Dataset:
+    # Function to balance dataset by duplicating minority class instances.
     counts = class_counts(dataset)
     max_count = max(counts.values())
     new_features = []
