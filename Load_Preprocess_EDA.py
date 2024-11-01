@@ -7,7 +7,6 @@ Created on Fri Sep 20 14:16:27 2024
 
 Load, Preprocess, and EDA for MW Classifier
 
-Blinks and samples with blinks interpolated have been saved as CSVs on Lexar drive
 """
 
 #%% imports
@@ -20,9 +19,27 @@ from matplotlib import pyplot as plt
 from scipy.interpolate import interp1d #CubicSpline
 from extract_raw_samples import extract_raw as extract
 import os
+import time
 
 
 #%% functions
+def load_data(file_path, chunksize = 500000):
+    # load data in chunks
+    chunks = []
+    chunk_count = 0
+    total_rows = 0
+    for chunk in pd.read_csv(file_path, chunksize=chunksize):
+        chunks.append(chunk)
+        chunk_count += 1
+        total_rows += len(chunk)
+        # print progress
+        print(f"Processed chunk {chunk_count}, total rows processed: {total_rows}")
+    # concat chunks into df
+    dfSamples = pd.concat(chunks,ignore_index=True)
+    # drop unnamed 0 if present
+    if "Unnamed: 0" in dfSamples.columns:
+        dfSamples.drop("Unnamed: 0", axis=1, inplace=True)
+    return dfSamples
 
 def load_raw_samples(data_path, subjects): 
     """
@@ -426,8 +443,8 @@ def interpolate_pupil_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subj
     # get the time of every sample
     sample_time = this_sub_run_samples['tSample'].to_numpy()
     #print(sample_time[10999:11999])
-    LPupil = np.array(this_sub_run_samples['LPupil_normalized'])
-    RPupil = np.array(this_sub_run_samples['RPupil_normalized'])
+    LPupil = np.array(this_sub_run_samples['LPupil'])
+    RPupil = np.array(this_sub_run_samples['RPupil'])
 
     # iterate throu each row of blink dataframe
     print("num blinks for this subject and run: ", len(this_sub_run_blinks))
@@ -529,13 +546,13 @@ def interpolate_pupil_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subj
                 # Update dfSamples directly within the loop
                 if row["eye"] == "L":
                     #print(f"Updating indices: {this_sub_run_samples.index[mask]}")
-                    dfSamples.loc[this_sub_run_samples.index[mask], "LPupil_normalized"] = interp_Lpupil
+                    dfSamples.loc[this_sub_run_samples.index[mask], "LPupil"] = interp_Lpupil
                     # Print values after the update
                     #print("Values after update (LPupil):")
                     #print(dfSamples.loc[indices_to_update, "LPupil"])
                 if row["eye"] == "R":
                     #print(f"Updating indices: {this_sub_run_samples.index[mask]}")
-                    dfSamples.loc[this_sub_run_samples.index[mask], "RPupil_normalized"] = interp_Rpupil
+                    dfSamples.loc[this_sub_run_samples.index[mask], "RPupil"] = interp_Rpupil
                     
                 # if these were zeros this would cause the interpolation to fail, but they're not
                 #print(f"Pupil dilation at t1: {LPupil[y_ind_L[0]] if row['eye'] == 'L' else RPupil[y_ind_R[0]]}")
@@ -1277,8 +1294,7 @@ def preprocess(dfSamples):
                                                        'run_num'])['tSample'].transform(lambda x: x - x.min())
     print("tSample_normalized has been created.")
     
-    # normalize pupils - done before interpolation, don't do again
-    #dfSamples = normalize_pupil(dfSamples)
+    dfSamples = normalize_pupil(dfSamples)
     
     # make subject values strings
     dfSamples["Subject"] = dfSamples["Subject"].astype(str)
@@ -1300,7 +1316,7 @@ def correlation_heatmap(dfSamples):
     None
     """
     # get rid of subject and sample id
-    data = dfSamples[["tSample_normalized", "RX", "RY", "RPupil_normalized",
+    data = dfSamples[["RX", "RY", "RPupil_normalized",
                       "LX", "LY", "LPupil_normalized", "is_MW"]]#"Lblink", "Rblink", "is_MW"]]
     
     corr_matrix = data.corr()
@@ -1468,7 +1484,7 @@ def normalize_pupil(dfSamples):
     Parameters
     ----------
     dfSamples: Dataframe
-        The dataframe of samples for each subject.
+        The dataframe of samples for all subjects.
     
     Returns
     -------
@@ -1490,7 +1506,7 @@ def normalize_pupil_pre_interp(dfSamples):
     Parameters
     ----------
     dfSamples: Dataframe
-        The dataframe of samples for each subject.
+        The dataframe of samples for one subject.
     
     Returns
     -------
@@ -1585,99 +1601,6 @@ def coord_over_time(dfSamples):
     plt.legend()
     
     plt.savefig("plots/coord_over_time_avg_sub_run.png")
-#%% Gaze coordinates over time (averaged over subjects and runs)
-# just to check for artifacts
-
-
-#%% Interpolate Pupil
-# may need to be updated to utilize saccades instead of a blink buffer
-# run interpolation on samples csv for each subject and run
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-data_path = "E:\\" 
-dfBlink = pd.read_csv(f"{data_path}MW_Classifier_Data\\all_s_blinks.csv")
-for subject in subjects:
-    for run in range(1,6):
-        subject_str = str(subject)
-        dfSamples = pd.read_csv(f"{data_path}/CSV_Samples/{subject}/s{subject_str[-3:]}_r{run}_Sample.csv")
-        interpolate_pupil_over_blinks(dfSamples, dfBlink, subject, run)
-        
-
-#%%
-# investigate issue with non-finite values in eye coordinates
-s10014_inter_r1 = pd.read_csv("E:\\CSV_Samples\\10014\\s014_r1_Sample_Interpolated_Pupil.csv")
-print("missing values")
-print(s10014_inter_r1[['LX', 'LY', 'RX', 'RY']].isna().sum())
-print("inf values")
-print(s10014_inter_r1[['LX', 'LY', 'RX', 'RY']].apply(lambda x: np.isinf(x).sum()))
-
-
-#%% Interpolate Coordinates, updating the csvs that already went through pupil interpolation
-# hold off on this until I can discuss infinite values with lab - how to proceed with them? 
-# set to na then interpolate over? linear interpolation?
-
-# before doing this, make a plot of the coordinates over time on the not interpolated
-# data and save in pre artifact removal folder to show a before and after
-for subject in subjects:
-    for run in range(1,6):
-        subject_str = str(subject)
-        dfSamples = pd.read_csv(f"E:\\CSV_Samples\\{subject}\\s{subject_str[-3:]}_r{run}_Sample_Interpolated.csv")
-        interpolate_coordinates_over_blinks(dfSamples, dfBlink, subject, run)
-
-#%% extract
-# done, these are csvs on lexar (interpolated csvs are interpolation with errors)
-# currently set to extract from interpolated_pupil files
-# create raw samples from those interpolated csvs (extract_raw_samples)
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-
-for subject in subjects:
-    folder_path = f"E:\\CSV_Samples\\{subject}"
-    extract(subject, folder_path)
-
-#%% Preprocess
-# redo process starting here after changing drive format
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-data_path = "E:\\MW_Classifier_Data\\"
-dfSamples = load_raw_samples(data_path, subjects)
-dfSamples = preprocess(dfSamples)
-
-#%%
-# Drop "Unnamed: 0", "LPupil", "RPupil"
-dfSamples = dfSamples.drop(["Unnamed: 0", "LPupil", "RPupil"], axis=1)
-print(dfSamples.columns)
-#%% save processed file to new csv
-chunksize = 100000
-dfSamples.to_csv("E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil.csv", chunksize=chunksize, index=False)
-
-#%% 
-# get subject and run num dtypes in interpolated samples
-print(dfSamples["Subject"])
-print(dfSamples["run_num"])
-
-#both are numeric
-
-#%%
-
-dfSamples = pd.read_csv("E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil.csv")
-#%% Plot
-correlation_heatmap(dfSamples)
-mw_freq_by_subject(dfSamples)
-mw_over_time(dfSamples)
-pupil_over_time(dfSamples)
-pupil_subject_run(dfSamples, subjects)
-eye_coordinates(dfSamples, subjects)
-
-
-#%% Get subject datatype
-data_path = "/Volumes/Lexar/MW_Classifier_Data/" 
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-
-dfSamples = pd.read_csv(f"{data_path}all_subjects_data_no_interpolation.csv")
-print(dfSamples["Subject"])
-
 
 
 #%%
@@ -1690,31 +1613,11 @@ print(dfBlink["eye"].unique())
 left_blinks = dfBlink[dfBlink["eye"] == "L"]
 right_blinks = dfBlink[dfBlink["eye"] == "R"]
 
-# get blink durations
-left_blink_durations = left_blinks["tEnd"] - left_blinks["tStart"]
-right_blink_durations = right_blinks["tEnd"] - right_blinks["tStart"]
-
-# plot distribution
-plt.figure(figsize=(10, 6))
-plt.hist(left_blink_durations, bins=50, alpha=0.5, label='Left Eye Blink Durations')
-plt.hist(right_blink_durations, bins=50, alpha=0.5, label='Right Eye Blink Durations')
-plt.xlabel('Blink Duration (ms)')
-plt.ylabel('Frequency')
-plt.title('Distribution of Blink Durations for Left and Right Eyes')
-plt.legend()
-plt.show()
-
-# we do not have data for many R eye blinks in the 1300 ms-2000 ms range
-# but we do have data for L eye blinks of that length. just use 
-# L eye for analysis
-
-
 
 #%%
 
 dfSamples_no_interpolation = pd.read_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_data_no_interpolation.csv")
 
-#%%
 print(dfSamples_no_interpolation.columns)
 
 # how many ms in each run
@@ -1725,37 +1628,8 @@ rows_per_subject_run = dfSamples_no_interpolation.groupby(['Subject', 'run_num']
 average_rows_per_run = rows_per_subject_run.mean()
 
 print(average_rows_per_run)
-#%%
-dfSamples_no_interpolation = normalize_pupil(dfSamples_no_interpolation)
 
-dfSamples_no_interpolation.columns
 
-#%%
-
-dfSamples_no_interpolation["Subject"].unique()
-
-#%% 
-
-dfSamples_no_interpolation = dfSamples_no_interpolation.drop(["Unnamed: 0", "LPupil", "RPupil"], axis=1)
-print(dfSamples_no_interpolation["Subject"])
-#%%
-dfSamples_no_interpolation.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_data_no_interpolation.csv", chunksize=100000, index=False)
-#%% Plot
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-dfSamples_no_interpolation["Subject"] = dfSamples_no_interpolation['Subject'].astype(str)
-#correlation_heatmap(dfSamples_no_interpolation)
-mw_freq_by_subject(dfSamples_no_interpolation)
-mw_over_time(dfSamples_no_interpolation)
-#pupil_over_time(dfSamples_no_interpolation)
-#pupil_subject_run(dfSamples_no_interpolation, subjects)
-#eye_coordinates(dfSamples_no_interpolation, subjects)
-
-#%%
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-data_path = "/Volumes/brainlab/Mindless Reading/DataCollection/"
-dfBlinks = load_blink_data(subjects, data_path)
 
 #%% load all blinks
 dfBlink = pd.read_csv("/Volumes/Lexar/MW_Classifier_Data/all_s_blinks_9_30.csv")
@@ -1824,33 +1698,6 @@ plt.title('Distribution of Blink Durations for Left and Right Eyes')
 plt.legend()
 plt.show()
 
-# from excel countif on all blinks file- 16799 Lblinks, 18790 Rblinks
-# so, more right eye blinks, but shorter than left eye blinks. Why are they different?
-#%% CURRENT STARTS HERE- dated
-# re run interpolation- try only using files in gbl
-# uses v2- interpolates over saccades
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125,10127]
-for subject_num in subjects:
-    for run_num in range(1,6):
-        subject_str = str(subject_num)
-        foldernames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/")
-        matching_folders = [folder for folder in foldernames if (folder.startswith(f"s{subject_str[-3:]}_r{run_num}") & folder.endswith("data"))]
-        folder = matching_folders[0]
-        filenames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}")
-        matching_sample_filenames = [file for file in filenames if (file.endswith("Sample.csv") and not file.startswith("._"))]
-        sample_file = matching_sample_filenames[0]
-        print("sample file", sample_file)
-        matching_blink_filenames = [file for file in filenames if (file.endswith("Blink.csv") and not file.startswith("._"))]
-        blink_file = matching_blink_filenames[0]
-        print("blink file", blink_file)
-        matching_saccade_filenames = [file for file in filenames if (file.endswith("Saccade.csv") and not file.startswith("._"))]
-        saccade_file = matching_saccade_filenames[0]
-        print("saccade file", saccade_file)
-        dfSamples = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{sample_file}")
-        dfBlink = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{blink_file}")
-        dfSaccades = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{saccade_file}")
-        interpolate_pupil_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
         
 #%%
 # missing values for eye coordinates are dispersed over run durations
@@ -1950,8 +1797,6 @@ print(max_missing_df)
         
 # if < 250 max, do linear interp over missing values (pandas method)
 # many are >250 :(
-# then do regular coordinate interpolation after updating function to use fallback
-# then create the df of interpolated samples and plot to check work
 
 #%%
 # check if missing coordinates coincide with blink periods
@@ -2013,212 +1858,7 @@ print(sum(all_missing_L_outside_blink))
 
 print("Number of missing R eye coordinates outside of blink periods")
 print(sum(all_missing_R_outside_blink))
-#%%
-# forward fill the missing coordinates and run coordinate interpolation for each subject and run
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
 
-for subject_num in subjects:
-    for run_num in range(1,6):
-        subject_str = str(subject_num)
-        foldernames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/")
-        matching_folders = [folder for folder in foldernames if (folder.startswith(f"s{subject_str[-3:]}_r{run_num}") & folder.endswith("data"))]
-        folder = matching_folders[0]
-        filenames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}")
-        matching_blink_filenames = [file for file in filenames if (file.endswith("Blink.csv") and not file.startswith("._"))]
-        blink_file = matching_blink_filenames[0]
-        print("blink file", blink_file)
-        matching_saccade_filenames = [file for file in filenames if (file.endswith("Saccade.csv") and not file.startswith("._"))]
-        saccade_file = matching_saccade_filenames[0]
-        print("saccade file", saccade_file)
-        # feed in file that already had pupil interpolation
-        dfSamples = pd.read_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated.csv")
-        dfBlink = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{blink_file}")
-        dfSaccade = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{saccade_file}")
-
-        # forward fill missing coordinates
-        dfSamples[["LX", "LY", "RX", "RY"]] = dfSamples[["LX", "LY", "RX", "RY"]].fillna(method="ffill")
-
-        # interpolate
-        interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
-
-#%%
-# extract interpolated_pupil_coord
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-
-for subject in subjects:
-    folder_path = f"/Volumes/Lexar/CSV_Samples/{subject}"
-    extract(subject, folder_path)
-    
-#%% 
-# preprocess
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-data_path = "/Volumes/Lexar/MW_Classifier_Data/"
-dfSamples = load_raw_samples(data_path, subjects)
-dfSamples = preprocess(dfSamples)
-print(dfSamples.columns)
-
-#%%
-# drop cols if needed (unnamed, lpupil, rpupil)
-dfSamples = dfSamples.drop(["Unnamed: 0.1", "Unnamed: 0", "LPupil", "RPupil"],axis=1)
-
-#%% 
-# save to csv
-dfSamples.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated_pupil_coord.csv")
-#%% 
-print(dfSamples["Subject"])
-
-#%% 
-# read csv
-chunks = []
-chunk_count = 0
-total_rows = 0
-chunksize = 500000
-for chunk in pd.read_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated_pupil_coord.csv", chunksize=chunksize):
-    chunks.append(chunk)
-    chunk_count += 1
-    total_rows += len(chunk)
-    # print progress
-    print(f"Processed chunk {chunk_count}, total rows processed: {total_rows}")
-# concat chunks into df
-dfSamples = pd.concat(chunks,ignore_index=True)
-#%% Current ends here
-
-dfSamples["Subject"] = dfSamples["Subject"].astype(str)
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-print("creating corr heatmap")
-correlation_heatmap(dfSamples)
-print("freq by subject")
-mw_freq_by_subject(dfSamples)
-print("mw over time")
-mw_over_time(dfSamples)
-print("pupil over time")
-pupil_over_time(dfSamples)
-print("pupil subject run")
-pupil_subject_run(dfSamples, subjects)
-print("eye coords")
-eye_coordinates(dfSamples, subjects)
-print("coord over time")
-coord_over_time(dfSamples)
-
-
-#%%
-# check for missing values in samples
-for subject_num in subjects:
-    for run_num in range(1,6):
-        subject_str = str(subject_num)
-        dfSamples = pd.read_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated.csv")
-        LX_na = dfSamples["LX"].isna().sum()
-        LY_na = dfSamples["LY"].isna().sum()
-        RX_na = dfSamples["RX"].isna().sum()
-        RY_na = dfSamples["RY"].isna().sum()
-        print(f"Subject {subject_num}, run {run_num}")
-        print("total rows: ",len(dfSamples))
-        print(f"LX Na: {LX_na}")
-        print(f"LY Na: {LY_na}")
-        print(f"RX Na: {RX_na}")
-        print(f"RY Na: {RY_na}")
-        
-# s10127 is missing all left eye data
-        
-#%%
-# drop s10127 - leave them out of subjects list when processing
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-for subject_num in subjects:
-    for run_num in range(1,6):
-        subject_str = str(subject_num)
-        print(subject_num, run_num)
-        # drop rows with missing coordinate values from sample_interpolated files 
-        interpolated_samples = pd.read_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated.csv")
-        interpolated_samples = interpolated_samples.dropna(subset=["LX", "LY", "RX", "RY"])
-        # check df length
-        print(len(interpolated_samples))
-        # resave csvs 
-        interpolated_samples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated.csv")
-
-
-#%% coordinate interpolation - run on interpolated samples 
-
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-# because we dropped some rows, some blinks will certainly be skipped
-
-for subject_num in subjects:
-    for run_num in range(1,6):
-        subject_str = str(subject_num)
-        foldernames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/")
-        matching_folders = [folder for folder in foldernames if (folder.startswith(f"s{subject_str[-3:]}_r{run_num}") & folder.endswith("data"))]
-        folder = matching_folders[0]
-        filenames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}")
-        matching_blink_filenames = [file for file in filenames if (file.endswith("Blink.csv") and not file.startswith("._"))]
-        blink_file = matching_blink_filenames[0]
-        print("blink file", blink_file)
-        # feed in file that already had pupil interpolation
-        dfSamples = pd.read_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated.csv")
-        dfBlink = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{blink_file}")
-        interpolate_coordinates_over_blinks(dfSamples, dfBlink, subject_str, run_num)
-#%% extract
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-
-for subject in subjects:
-    folder_path = f"/Volumes/Lexar/CSV_Samples/{subject}"
-    #folder_path2 = f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject}"
-    extract(subject, folder_path)
-    
-#%%
-# check a df resulting from extraction to see how to load it best
-df = pd.read_csv("/Volumes/Lexar/MW_Classifier_Data/10014_raw_interpolated_pupil_coord.csv")
-print(df.dtypes)
-print(df.isna().sum())
-df.head()
-
-#%% Preprocess and plot
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-data_path = "/Volumes/Lexar/MW_Classifier_Data/"
-dfSamples = load_raw_samples(data_path, subjects)
-dfSamples = preprocess(dfSamples) # includes pupil normalization
-
-print(dfSamples.columns)
-#%%
-# Drop "Unnamed: 0", "LPupil", "RPupil"
-dfSamples = dfSamples.drop(["Unnamed: 0.3", "Unnamed: 0.2", "Unnamed: 0.1", "Unnamed: 0", "LPupil", "RPupil"], axis=1)
-print(dfSamples.columns)
-print(dfSamples["Subject"])
-print(len(dfSamples))
-
-#%%
-# save csv
-dfSamples["Subject"] = dfSamples["Subject"].astype(str)
-dfSamples.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated_pupil_coord.csv")
-#%%
-# generate plots
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-correlation_heatmap(dfSamples)
-mw_freq_by_subject(dfSamples)
-mw_over_time(dfSamples)
-pupil_over_time(dfSamples)
-pupil_subject_run(dfSamples, subjects)
-eye_coordinates(dfSamples, subjects)
-coord_over_time(dfSamples)
-
-#%% 
-eye_coordinates(dfSamples, subjects)
-coord_over_time(dfSamples)
-
-#%%
-print(dfSamples["LPupil_normalized"].min())
-print(dfSamples["RPupil_normalized"].min())
-
-#%% save processed file to new csv if it did
-chunksize = 100000
-dfSamples.to_csv("E:\\MW_Classifier_Data\\all_subjects_interpolated_pupil.csv", chunksize=chunksize, index=False)
 
 #%% load saccades and blinks
 
@@ -2417,23 +2057,18 @@ else:
 """
 
 
-#%%
-# get info about data 
-chunks = []
-for chunk in pd.read_csv("/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated_pupil_coord.csv", chunksize=100000):
-    chunks.append(chunk)
-    
-dfSamples = pd.concat(chunks,ignore_index=True)
-dfSamples.drop(subset="Unnamed: 0", axis=1, inplace=True)
 
-#%%
-#%% CURRENT STARTS HERE 10/21
+#%% Interpolation, preprocessing, extraction... latest pipeline
 # no forward fill, use saccades, no s10127
 
 subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125]
+# set up variables for time estimation
+start_time = time.time()
+total_runs = len(subjects) * 5 # 5 runs for each subject
+interpolated_runs = 0 # counter
 
-# pupil interpolation with within-subject normalization first
+# within-subject normalization after interpolation (during preprocessing)
 for subject_num in subjects:
     for run_num in range(1,6):
         subject_str = str(subject_num)
@@ -2448,7 +2083,6 @@ for subject_num in subjects:
         blink_file = matching_blink_filenames[0]
         print("blink file", blink_file)
         dfSamples = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{sample_file}")
-        dfSamples = normalize_pupil_pre_interp(dfSamples)
         dfBlink = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{blink_file}")
         matching_saccade_filenames = [file for file in filenames if (file.endswith("Saccade.csv") and not file.startswith("._"))]
         saccade_file = matching_saccade_filenames[0]
@@ -2458,46 +2092,31 @@ for subject_num in subjects:
         dfSamples = interpolate_coordinates_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
         # pupil interpolation
         dfSamples = interpolate_pupil_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
-        print("LPupil min")
-        print(dfSamples["LPupil_normalized"].min())
-        print("RPupil min")
-        print(dfSamples["RPupil_normalized"].min())
+        interpolated_runs += 1
+        elapsed_time = time.time() - start_time
+        avg_interp_time = elapsed_time / interpolated_runs
+        remaining_time = avg_interp_time * (total_runs - interpolated_runs)
+        print(f"Elapsed time: {elapsed_time //60:.0f} min {elapsed_time % 60:.0f} sec")
+        print(f"Estimated remaining time: {remaining_time // 60:.0f} min {remaining_time % 60:.0f} sec")
         
-"""
-# coordinate interpolation without forward fill first
-for subject_num in subjects:
-    for run_num in range(1,6):
-        subject_str = str(subject_num)
-        foldernames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/")
-        matching_folders = [folder for folder in foldernames if (folder.startswith(f"s{subject_str[-3:]}_r{run_num}") & folder.endswith("data"))]
-        folder = matching_folders[0]
-        filenames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}")
-        matching_blink_filenames = [file for file in filenames if (file.endswith("Blink.csv") and not file.startswith("._"))]
-        blink_file = matching_blink_filenames[0]
-        print("blink file", blink_file)
-        matching_saccade_filenames = [file for file in filenames if (file.endswith("Saccade.csv") and not file.startswith("._"))]
-        saccade_file = matching_saccade_filenames[0]
-        print("saccade file", saccade_file)
-        # feed in file that already had pupil interpolation
-        dfSamples = pd.read_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated.csv")
-        dfBlink = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{blink_file}")
-
-        # forward fill missing coordinates
-        #dfSamples[["LX", "LY", "RX", "RY"]] = dfSamples[["LX", "LY", "RX", "RY"]].fillna(method="ffill")
-
-        # interpolate
-        interpolate_coordinates_over_blinksv2(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
-"""
+start_time = time.time()
+extracted_subjects = 0
 # extract interpolated from
 # /Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated.csv
 for subject in subjects:
     folder_path = f"/Volumes/Lexar/CSV_Samples/{subject}"
     extract(subject, folder_path)
+    elapsed_time = time.time() - start_time
+    extracted_subjects += 1
+    avg_extract_time = elapsed_time / extracted_subjects
+    remaining_time = avg_extract_time * (len(subjects) - extracted_subjects)
+    print(f"Elapsed time: {elapsed_time //60:.0f} min {elapsed_time % 60:.0f} sec")
+    print(f"Estimated remaining time: {remaining_time // 60:.0f} min {remaining_time % 60:.0f} sec")
     
 # now files are at /Volumes/Lexar/MW_Classifier_Data/{sub_id}_raw.csv
     
 #%%%
-# start here to save csv no need to regenerate plots
+# start here to plot and save csv 
 subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125]
 data_path = "/Volumes/Lexar/MW_Classifier_Data/"
@@ -2513,12 +2132,11 @@ print(dfSamples["Subject"])
 
 print(dfSamples["LPupil_normalized"].min())
 print(dfSamples["RPupil_normalized"].min())
-
+#%%
 # drop cols if needed
-#dfSamples = dfSamples.drop(["Unnamed: 0", "LPupil", "RPupil"], axis=1)
+dfSamples = dfSamples.drop(["Unnamed: 0", "LPupil", "RPupil"], axis=1)
 
-# consider replacing 0s with na and forward filling? prior to interpolation
-# both of these are 0 :( 
+# subject should be str for plotting
 
 # plots
 print("creating corr heatmap")
@@ -2540,152 +2158,36 @@ coord_over_time(dfSamples)
 
 print(dfSamples.isna().sum())
 print(dfSamples.columns)
-#%%
-# drop rows with missing coordinate values
+
+#%% drop rows with missing coords
 dfSamples = dfSamples.dropna()
+print(dfSamples.isna().sum())
 #%% 
 # drop unnecessary cols
 #dfSamples = dfSamples.drop(columns=["LPupil", "RPupil", "Unnamed: 0"])
 # save to csv in netfiles
-#dfSamples.to_csv("/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated.csv")
+print("saving to netfiles...")
+dfSamples.to_csv("/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated.csv")
 # and lexar
+print("saving to lexar...")
 dfSamples.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated.csv")
-#%% 
-print(dfSamples["Subject"])
 
 #%% 
-# read csv
-chunks = []
-chunk_count = 0
-total_rows = 0
-chunksize = 500000
-for chunk in pd.read_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated_pupil_coord.csv", chunksize=chunksize):
-    chunks.append(chunk)
-    chunk_count += 1
-    total_rows += len(chunk)
-    # print progress
-    print(f"Processed chunk {chunk_count}, total rows processed: {total_rows}")
-# concat chunks into df
-dfSamples = pd.concat(chunks,ignore_index=True)
-#%% Current ends here
-
-dfSamples["Subject"] = dfSamples["Subject"].astype(str)
+# check if num rows misisng page num is the same as num missing run num for raw files
+# if this is the case- have we already filtered out instances that aren't between 
+# page start and page end and thus filtered out all comprehension question time
+# through dropping rows with missing run num in preprocessing setp
 subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125]
-print("creating corr heatmap")
-correlation_heatmap(dfSamples)
-print("freq by subject")
-mw_freq_by_subject(dfSamples)
-print("mw over time")
-mw_over_time(dfSamples)
-print("pupil over time")
-pupil_over_time(dfSamples)
-print("pupil subject run")
-pupil_subject_run(dfSamples, subjects)
-print("eye coords")
-eye_coordinates(dfSamples, subjects)
-print("coord over time")
-coord_over_time(dfSamples)
-
-
-#%% Create uninterpolated with blink cols
-# add blink col to csv sample for each subject and run
-    # have csv sample files end in "Sample_with_blink.csv" after this
-
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-
-
-for subject_num in subjects:
-    for run_num in range(1,6):
-        # load in samples and blinks for this sub and run
-        subject_str = str(subject_num)
-        foldernames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/")
-        matching_folders = [folder for folder in foldernames if (folder.startswith(f"s{subject_str[-3:]}_r{run_num}") & folder.endswith("data"))]
-        folder = matching_folders[0]
-        filenames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}")
-        matching_sample_filenames = [file for file in filenames if (file.endswith("Sample.csv") and not file.startswith("._"))]
-        sample_file = matching_sample_filenames[0]
-        print("sample file", sample_file)
-        matching_blink_filenames = [file for file in filenames if (file.endswith("Blink.csv") and not file.startswith("._"))]
-        blink_file = matching_blink_filenames[0]
-        print("blink file", blink_file)
-        dfSamples = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{sample_file}")
-        dfBlink = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{blink_file}")
-        # add Lblink and Rblink to dfSamples
-        # if tSample is within tStart and tEnd for a row of blink and "eye" matches L or R, col is 1 at that index
-        # initialize new cols to hold 0s
-        dfSamples["Rblink"] = 0
-        dfSamples["Lblink"] = 0
-        # loop through rows of dfBlink
-        for index, row in dfBlink.iterrows():
-            # get blink start, end, and eye
-            eye = row["eye"]
-            tStart = row["tStart"]
-            tEnd = row["tEnd"]
-            # create mask for samples within blink duration
-            mask = (dfSamples["tSample"] >= tStart) & (dfSamples["tSample"] <= tEnd)
-            # change value in appropriate blink col for indices in mask based on eye value
-            if eye == "L":
-                dfSamples.loc[mask, "Lblink"] = 1
-            elif eye == "R":
-                dfSamples.loc[mask, "Rblink"] = 1
-        # save dfSamples to new csv 
-        dfSamples.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_with_blink.csv")
-        
-#%%
-
-# extract samples
-for subject in subjects:
-    folder_path = f"/Volumes/Lexar/CSV_Samples/{subject}"
-    extract(subject, folder_path)
-#%%
-
-one_sub = pd.read_csv("/Volumes/Lexar/CSV_Samples/10014/s014_r1_Sample_with_blink.csv")
-print(one_sub.dtypes)
-#%%
-subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
-            10100,10103,10110,10111,10115,10117,10121,10125]
-# load and preprocess - make sure this includes the pupil normalization
 data_path = "/Volumes/Lexar/MW_Classifier_Data/"
-dfSamples = load_raw_samples(data_path, subjects)
-dfSamples = preprocess(dfSamples)
-print(dfSamples.columns)
-#%%
-# drop cols if needed
-dfSamples = dfSamples.drop(["Unnamed: 0", "LPupil", "RPupil"], axis=1)
-# forward fill missing coordinates
-dfSamples[["LX", "LY", "RX", "RY"]] = dfSamples[["LX", "LY", "RX", "RY"]].fillna(method="ffill")
-# save csv
-print("saving to csv...")
-dfSamples.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_sub_no_interp_with_blink.csv")
-# plot, change corr heatmap to include R and Lblink first
-print("creating corr heatmap")
-correlation_heatmap(dfSamples)
-print("freq by subject")
-mw_freq_by_subject(dfSamples)
-print("mw over time")
-mw_over_time(dfSamples)
-print("pupil over time")
-pupil_over_time(dfSamples)
-print("pupil subject run")
-pupil_subject_run(dfSamples, subjects)
-print("eye coords")
-eye_coordinates(dfSamples, subjects)
-print("coord over time")
-coord_over_time(dfSamples)
+for subject in subjects:
+    data = pd.read_csv(f"{data_path}{subject}_raw.csv")
+    print(f"subject {subject}")
+    missing_run = data["run_num"].isna().sum()
+    missing_page = data["page_num"].isna().sum()
+    print(f"Missing run num: {missing_run}")
+    print(f"Missing page num: {missing_page}")
+    if missing_run != missing_page:
+        print("Missing run num and page num counts do not match!")
 
-#%%
-# rerun fntn then gen corr heatmap, pupil per subject run, eye coords, and coord over time
-dfSamples["run_num"] = dfSamples["run_num"].astype(float)
-#%%
-print("creating corr heatmap")
-correlation_heatmap(dfSamples)
-print("pupil over time")
-pupil_over_time(dfSamples)
-print("pupil subject run")
-pupil_subject_run(dfSamples, subjects)
-print("eye coords")
-eye_coordinates(dfSamples, subjects)
-print("coord over time")
-coord_over_time(dfSamples)
+# For all subjects, # missing page num = # missing run num
