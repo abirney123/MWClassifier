@@ -26,9 +26,6 @@ from sklearn.metrics import confusion_matrix, precision_score, recall_score
 import seaborn as sn
 
 #%%
-import torchmetrics
-print(torchmetrics.__version__)
-#%%
 
 
 def load_data(file_path, chunksize = 500000):
@@ -48,6 +45,82 @@ def load_data(file_path, chunksize = 500000):
     if "Unnamed: 0" in dfSamples.columns:
         dfSamples.drop("Unnamed: 0", axis=1, inplace=True)
     return dfSamples
+
+
+def aggregate_probabilities(labels, probabilities, sequence_lengths, start_timesteps, threshold=0.5):
+    """
+    Aggregate probabilities from multiple windows that cover the same
+    timesteps to provide more robust classifications. Additionally, aggregate
+    labels so they are comparable.
+    Accepts:
+        - labels: List of arrays. Truth labels across all timesteps, flattened into a single
+        tensor. 
+        - probabilities: List of arrays. Predicted probabilities for each window.
+        Each probability must correspond to the probability generated for a 
+        certain window that starts at start_timestep and continues for sequence_length
+        timesteps.
+        - sequence-lengths: List of int. Sequence lengths for each window.
+        - start_timesteps: List of int. Start timesteps for each window.
+        - threshold: Float.Threshold for converting probabilities to classes. If the mean
+        probability is over or equal to this threshold, the classification will be
+        positive (MW). Optional, default is .5.
+    Returns:
+        - classifications: Dictionary. Aggregated predictions. Each key is a timestep,
+        each value is the class.
+        - agg_probabilities: Dictionary. Aggregated probabilities. Each key is a timestep,
+        each value is the probability of the classification being positive.
+        - agg_labels: Dictionary. Aggregated labels. Each key is a timestep and
+        each value is the true label at that timestep. No true aggregation is 
+        performed since these should be the same for each repeated timestep, 
+        this function just grabs the first label for each repeated timestep so 
+        shapes match for metric calculation.
+    """
+    # initialize dictionaries for probabilities, labels, and classifications
+    all_probabilities = {} # raw
+    agg_probabilities = {} # aggregated
+    agg_labels = {}
+    classifications = {}
+    """
+    print("Debug Info:")
+    print(f"Length of probabilities: {len(all_probabilities)}")
+    print(f"Length of sequence_lengths: {len(sequence_lengths)}")
+    print(f"Length of start_timesteps: {len(start_timesteps)}")
+    """
+    # accumulate predictions for each timestep
+    # loop through our parameter lists simultaneously
+    for i, (label, prob, sequence_len, start_time) in enumerate(zip(labels,
+                                                                    probabilities, 
+                                                                    sequence_lengths,
+                                                                    start_timesteps)):
+        min_len = min(sequence_len, prob.shape[0]) # make sure we don't go out of bounds
+        print(f" Processing Window {i}: Start {start_time}, Seq Len {sequence_len}, Prob Shape {prob.shape}")
+        for t in range(min_len): # for each timestep in the sequence
+            timestep = start_time + t # define timestep relative to start time
+            print(f"Timestep {timestep}: Label {label[t]}, Prob {prob[t]}")
+            # if the timestep isn't already a dict key, initialize it
+            if timestep not in all_probabilities:
+                all_probabilities[timestep] = []
+                # add the label for this timestep now- no true aggregation 
+                # needed bc these should be the same for each repeated timestep.
+                # we just need to do this to make the shapes the same
+                #print(label[t].item())
+                agg_labels[timestep] = label[t].item()
+            # add the prediction to the dictionary
+            all_probabilities[timestep].append(prob[t])
+    # aggregate
+    # for each key value pair in predictions dictionary
+    for timestep, probs in all_probabilities.items():
+        # get the average probability
+        avg_prob = np.mean(probs)
+        # add to list of aggregated probabilities
+        agg_probabilities[timestep] = avg_prob
+        if avg_prob >= threshold:
+            classification = 1
+        else:
+            classification = 0
+        classifications[timestep] = classification
+    
+    return classifications, agg_probabilities, agg_labels
 
 def split_data(dfSamples):
     # maintain even distribution of subjects and runs in train and test
@@ -281,7 +354,7 @@ print(train_data.columns)
 
 #%%
 # find mean mw duration in train set
-# make copy of train data so i dont alter the actual dataq
+# make copy of train data so i dont alter the actual data
 train_copy = train_data.copy()
 # find groups of consecutive rows where is_MW == 1
 train_copy["MW_change"] = train_copy["is_MW"].ne(train_copy["is_MW"].shift()).cumsum()
@@ -336,10 +409,14 @@ for idx, (_, sequence_labels) in enumerate(train_dataset):
     
 majority_labels = torch.tensor(majority_labels)
 # get class weights
+# they are based on inverse frequency of current class distribution
+# but to further compensate for our imbalance a multiplier is applied to 
+# weight of mw classes
 print("getting class weights")
 not_mw = (majority_labels == 0).sum()
 mw = (majority_labels == 1).sum()
-class_weights = [1.0/not_mw, 1.0/mw]
+multiplier = 1.15
+class_weights = [1.0/not_mw, (1.0/mw)*multiplier]
 print("assigning weights")
 # assign each sample a weight based on class & class weights
 sequence_weights = torch.tensor([class_weights[label] for label in majority_labels],
@@ -358,11 +435,12 @@ if len(majority_labels) != len(train_dataset):
 # create DataLoaders - no shuffling as this is time series data
 # specify num workers?
 # use collate fntn to add padding when sequences vary in length (we have more
-# samples for some subjects than others) - removing bc no longer necessary i think collate_fn=add_padding
-trainloader = DataLoader(train_dataset, batch_size = 128, shuffle=False,
+# samples for some subjects than others) 
+batch_size = 64
+trainloader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False,
                          sampler=weighted_sampler, collate_fn = add_padding)
 
-testloader = DataLoader(test_dataset, batch_size = 128, shuffle=False, 
+testloader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False, 
                         collate_fn = add_padding)
 
 """
@@ -374,10 +452,10 @@ for i, (inputs, labels) in enumerate(trainloader):
 """
 
 #%%
-# get sense of how imbalanced classes are - change pos weight if necessary!
+# get sense of how imbalanced classes are 
 
 # this is without weighted random sampler
-"""
+print("without weighted sampler")
 # get mw in train
 train_mw_count = train_data['is_MW'].sum()
 train_non_mw_count = len(train_data) - train_mw_count
@@ -392,12 +470,13 @@ print(f"Training Set Ratio (MW/Non-MW): {train_mw_count / train_non_mw_count:.2f
 
 print(f"Test Set: Mind Wandering: {test_mw_count}, Not Mind Wandering: {test_non_mw_count}")
 print(f"Test Set Ratio (MW/Non-MW): {test_mw_count / test_non_mw_count:.2f}")
-"""
+
 # imbalance is similar in train and test, but heavy in both (~10% of each dataset is MW)
 # use weighted loss function to penalize more for incorrect predictions on minority class (MW)
 # training set ratio MW/not MW = 2838679/30675671 (pre subject stratification)
 # post subject stratification Mind Wandering: 2830876, Not Mind Wandering: 29478085
 
+print("with weighted sampler")
 # with weighted random sampler
 train_mw_count = 0
 train_non_mw_count = 0
@@ -408,9 +487,11 @@ for i,(inputs,labels, seq_lens) in enumerate(trainloader):
     train_mw_count += mw_count
     train_non_mw_count += non_mw_count
     
-    
+print("train")
 print("MW:", train_mw_count)
 print("Non MW: ", train_non_mw_count)
+print(f"Training Set Ratio (MW/Non-MW): {train_mw_count / train_non_mw_count:.2f}")
+
 
 # classes are still slightly imbalanced after using weighted random sampler
 # maybe try including pos weight as well once best sequence length is found
@@ -535,27 +616,30 @@ plt.show()
     
 #%% Load saved model if needed
 
-# replace curr_datetime with datetime model was saved
-model_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\Models\\MW_Classifier{curr_datetime}.pth"
+# replace end of path with datetime model was saved
+model_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\Models\\MW_Classifier2024-10-23_01-48-06.pth"
 input_size = len(train_data.columns)-1 # num features per timestep, num columns in train or test -1 for labels
-hidden_size = 128 #256 
-num_layers = 1#2 # more than 3 isn't usually valuable, starting with 1
+hidden_size = 256 
+num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 model.load_state_dict(torch.load(model_path))
 
 #%% Evaluate 
-
+# prior cells must be run so seq len and step size are defined
 # load model if evaluating a saved model- code not in place yet
 # evaluate on the test set
 correct = 0
 total = 0
 model.eval() # put in evaluation mode
 
-# initialize lists to hold all predictions probabilities and labels
-all_predictions = []
+# initialize lists to hold raw predictions (not aggregated), probabilities, 
+# labels, start timesteps for windows, and sequence lengths
+raw_probabilities = []
 all_labels = []
-all_probabilities = []
+#all_probabilities = [] no longer needed, aggregating
+sequence_lengths = []
+start_timesteps = []
 
 # initialize f1, auc, mcc for binary classification
 f1 = F1Score(task="binary")
@@ -563,62 +647,81 @@ auc = AUROC(task="binary")
 auc_pr = BinaryAUROC()
 mcc = MatthewsCorrCoef(task="binary")
 
-for i, data in enumerate(testloader):
+for window_idx, data in enumerate(testloader):
     with torch.no_grad(): # disable gradient calculation
         inputs, labels, seq_lens = data
         inputs = inputs.to(device)
         labels = labels.to(device)
-        seq_lens = seq_lens.to(device)
+        seq_lens = seq_lens.to(device) # lengths of individual sequences in this batch
         
         # forward prop
         outputs = model(inputs, seq_lens)
-        #y_probs = torch.sigmoid(outputs)
-        # convert probs to predictions with .5 threshold
-        y_preds = (outputs >= .5).float()
-        # remove extra dimension from predictions
-        y_preds = y_preds.squeeze(-1)
-        
-        # add predictions and labels to lists
-        all_predictions.append(y_preds.cpu())
-        all_labels.append(labels.cpu())
-        all_probabilities.append(outputs.cpu())
-        
+        # remove extra dimension
+        outputs = outputs.squeeze(-1)
+        # get probabilities
+        probabilities = torch.sigmoid(outputs).cpu()
 
-        # flatten predictions and labels
-        y_preds_flat = y_preds.view(-1)
-        labels_flat = labels.view(-1)
-        # update total and correct
-        total += labels_flat.size(0)
-        correct += (y_preds_flat == labels_flat).sum().item()
+        for i in range(len(seq_lens)):
+            raw_probabilities.append(probabilities[i].numpy())
+            all_labels.append(labels[i].cpu().numpy())
+            sequence_lengths.append(seq_lens[i].item())
+            start_timesteps.append((window_idx * batch_size + i)* step_size)
+
+# max start_timesteps should be len(test data)-sequence_length (8515249)
+# size of start_timesteps should be equal to our number of windows (34052)
+"""
+print(min(start_timesteps))
+print(max(start_timesteps))
+"""
+
+#%%
+
+# aggregate classifications across overlapping windows
+#start_timesteps = [item for sublist in start_timesteps for item in sublist]
+agg_classes, agg_probs, agg_labels = aggregate_probabilities(labels = all_labels,
+                                                             probabilities = raw_probabilities,
+                                                             sequence_lengths = sequence_lengths,
+                                                             start_timesteps = start_timesteps)
 
 
-# concat all predictions and labels into single tensors
-all_predictions = torch.cat(all_predictions)
-all_labels = torch.cat(all_labels)
-all_probabilities = torch.cat(all_probabilities)
+# convert aggregated classifications and probabilities to tensors
+shared_keys = sorted(agg_labels.keys())
+aggregated_classifications = torch.tensor([agg_classes[t] for t in shared_keys])
+aggregated_probabilities = torch.tensor([agg_probs[t] for t in shared_keys])
+aggregated_labels = torch.tensor([agg_labels[t] for t in shared_keys])
 
+"""
+# print max key in agg_probs, labels, classes they should all be 8515249
+max_prob_timestep = max(agg_probs.keys())
+print(f"Max timestep in agg_probs: {max_prob_timestep}")
+max_class_timestep = max(agg_classes.keys())
+print(f"Max timestep in agg_classes: {max_class_timestep}")
+max_label_timestep = max(agg_labels.keys())
+print(f"Max timestep in agg_labels: {max_label_timestep}")
+"""
 # get auc
-overall_auc = auc(all_probabilities, all_labels)
+overall_auc = auc(aggregated_probabilities, aggregated_labels)
 print(f"AUC: {overall_auc:.4f}")
 
 # get auc-pr
 # flatten probs and labels
-flat_probs = all_probabilities.view(-1)
-flat_labs = all_labels.view(-1)
+flat_probs = aggregated_probabilities.view(-1)
+flat_labs = aggregated_labels.view(-1)
 auc_pr.update(flat_probs, flat_labs)
 auc_pr_result = auc_pr.compute()
 print(f"AUC-PR: {auc_pr_result:.4f}")
 # get f1
-overall_f1 = f1(all_predictions, all_labels)
+overall_f1 = f1(aggregated_classifications, aggregated_labels)
 print(f"Overall F1 Score: {overall_f1: .4f}")
 # take accuracy with a grain of salt bc our classes are imbalanced
-accuracy = (correct/total)*100
+# accuracy = (correct/total)*100 pre-aggregation
+accuracy = (aggregated_classifications == aggregated_labels).float().mean().item() * 100
 print(f"Accuracy: {accuracy: .2f}%") 
 
 # confusion matrix
 # adapted from https://christianbernecker.medium.com/how-to-create-a-confusion-matrix-in-pytorch-38d06a7f04b7
-flat_predictions = all_predictions.view(-1)
-conf_mat = confusion_matrix(flat_labs, flat_predictions)
+flat_classifications = aggregated_classifications.view(-1)
+conf_mat = confusion_matrix(flat_labs, flat_classifications)
 conf_df = pd.DataFrame(conf_mat / np.sum(conf_mat, axis=1)[:, None], index = ["Not MW", "MW"],
                      columns = ["Not MW", "MW"])
 
@@ -630,24 +733,26 @@ curr_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 plt.savefig(f"C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\plots\\LSTM_confmatrix_{curr_datetime}.png")
 
-precision = precision_score(flat_labs, flat_predictions)
-recall = recall_score(flat_labs, flat_predictions)
+precision = precision_score(flat_labs, flat_classifications)
+recall = recall_score(flat_labs, flat_classifications)
 
 print(f"Precision: {precision}")
 print(f"Recall: {recall}")
 # mcc
-mcc_score = mcc(all_predictions, all_labels)
+mcc_score = mcc(aggregated_classifications, aggregated_labels)
 print("MCC", mcc_score)
 # log loss
 # make probabilities shape match labels shape
-log_probs = all_probabilities.squeeze(-1)
-criterion = nn.BCEWithLogitsLoss()
-log_loss = criterion(log_probs, all_labels)
+log_probs = aggregated_probabilities.squeeze(-1)
+criterion = nn.BCELoss() # use BCELoss here because aggregated probabilities is 
+# averaged probabilities for each timestep, no need for more sigmoid
+log_loss = criterion(log_probs, aggregated_labels)
 print(f"Log loss: {log_loss: .4f}")
 
-print("Last 5 predictions and truth labels:")
+print("Last 5 classifications and truth labels:")
 for i in range(-5,0):
     # printing last item in sequence for five sequences of predictions and the corresponding label
-    print(f"Prediction: {int(all_predictions[i, -1].item())}, Truth: {int(all_labels[i, -1].item())}")
+    print(f"Classification: {int(aggregated_classifications[i].item())}, Truth: {int(aggregated_labels[i].item())}")
 
-
+# plot truth labels vs classifications for each subject and run
+# generate f1 for each subject and run
