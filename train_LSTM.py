@@ -27,6 +27,7 @@ from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 import time
 import os
+import joblib
 
 
 
@@ -122,7 +123,7 @@ def add_padding(batch):
 
 # define custom Dataset class
 class WindowedTimeSeriesDataset(Dataset):
-    def __init__(self, data, sequence_length=2500, step_size=250, scaler=None, fit_scaler=False, columns_to_scale=None):
+    def __init__(self, data, sequence_length=2500, step_size=250):
         """
         Params:
             - data: The dataset 
@@ -135,10 +136,6 @@ class WindowedTimeSeriesDataset(Dataset):
         self.data = data
         self.sequence_length = sequence_length
         self.step_size = step_size
-        self.columns_to_scale = columns_to_scale
-        
-        if self.columns_to_scale is not None:
-            self.column_indices = [data.columns.get_loc(col) for col in columns_to_scale]
             
         # separate features and labels
         # exclude non feature columns from features, but keep in dataset for logocv
@@ -146,18 +143,6 @@ class WindowedTimeSeriesDataset(Dataset):
                                    "tSample", "Subject", "tSample_normalized",
                                    "mw_proportion", "mw_bin"], axis=1).values
         self.labels = data["is_MW"].values
-        
-
-        
-        if scaler is None:
-            self.scaler = StandardScaler()
-        else:
-            self.scaler = scaler
-            
-        if fit_scaler:
-            self.features[:, self.column_indices] = self.scaler.fit_transform(self.features[:,self.column_indices])
-        else:
-            self.features[:,self.column_indices] = self.scaler.transform(self.features[:,self.column_indices])
 
     
     def __len__(self):
@@ -246,7 +231,14 @@ file_path = "./all_subjects_interpolated.csv"
 if not os.path.exists(file_path):
     print(f"Error: Data file not found at {file_path}")
 #dfSamples = load_data(file_path)
+print("Loading data...")
 dfSamples=pd.read_csv(file_path)
+
+if "Unnamed: 0" in dfSamples.columns:
+    dfSamples.drop("Unnamed: 0", axis=1, inplace=True)
+    print("Unnamed: 0 dropped.") 
+    print("dfSamples Columns: ", dfSamples.columns)
+    
 
 # train test split
 # do subject-wise train test split to ensure model generalizes well to new subjects
@@ -285,10 +277,9 @@ lr = .001
 sequence_length = 2500 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
 # might have been suffering from vanishing gradient with 4k and 8k
 step_size = 250
-batch_size = 64
+batch_size = 128
 columns_to_scale = ["LX", "LY", "RX", "RY"]
-# initialize scaler
-scaler = StandardScaler()
+
 
 # Cross Validation loop
 
@@ -299,24 +290,31 @@ val_losses_folds = []
 # initialize best val loss to be high so we can track the model that performs best and save it
 best_val_loss = float("inf")
 best_model_state = None
+best_scaler = None
 
 for fold, (train_idx, val_idx) in enumerate(logo.split(train_data, train_data["is_MW"],
                                                        groups)):
     print("Processing fold ", fold+1, "...")
     print(f"Train fold size: {len(train_idx)}, Val fold size: {len(val_idx)}")
+    
     # create train and validation sets for this fold
     train_fold = train_data.iloc[train_idx]
     val_fold = train_data.iloc[val_idx]
     
+    train_fold_scaled = train_fold.copy()
+    val_fold_scaled = val_fold.copy()
+    
+    # fit scaler on training data for this fold
+    # initialize scaler
+    scaler = StandardScaler()
+    # fit transform train
+    train_fold_scaled.loc[:,columns_to_scale] = scaler.fit_transform(train_fold[columns_to_scale])
+    # transform validation
+    val_fold_scaled.loc[:,columns_to_scale] = scaler.transform(val_fold[columns_to_scale])
+    
     # prepare datasets for this fold
-    train_fold_dataset = WindowedTimeSeriesDataset(train_fold, sequence_length,
-                                                  step_size, scaler=scaler,
-                                                  fit_scaler=True,
-                                                  columns_to_scale = columns_to_scale)
-    val_fold_dataset = WindowedTimeSeriesDataset(val_fold, sequence_length,
-                                                  step_size, scaler=scaler,
-                                                  fit_scaler=False,
-                                                  columns_to_scale = columns_to_scale)
+    train_fold_dataset = WindowedTimeSeriesDataset(train_fold_scaled, sequence_length, step_size)
+    val_fold_dataset = WindowedTimeSeriesDataset(val_fold_scaled, sequence_length, step_size)
     # set up weightedRandomSampler for this folds train set
     # calculate the majority label in each sequence
     majority_labels = []
@@ -339,9 +337,14 @@ for fold, (train_idx, val_idx) in enumerate(logo.split(train_data, train_data["i
     majority_labels = torch.tensor(majority_labels)
     # get class weights
     print("getting class weights")
+    # get class weights
+    # they are based on inverse frequency of current class distribution
+    # but to further compensate for our imbalance a multiplier is applied to 
+    # weight of mw classes
     not_mw = (majority_labels == 0).sum()
     mw = (majority_labels == 1).sum()
-    class_weights = [1.0/not_mw, 1.0/mw]
+    multiplier = 1.15
+    class_weights = [1.0/not_mw, (1.0/mw)*multiplier]
     print("assigning weights")
     # assign each sample a weight based on class & class weights
     sequence_weights = torch.tensor([class_weights[label] for label in majority_labels],
@@ -365,26 +368,14 @@ for fold, (train_idx, val_idx) in enumerate(logo.split(train_data, train_data["i
                              collate_fn=add_padding, drop_last=True)
     valloader = DataLoader(val_fold_dataset, batch_size=batch_size, shuffle=False,
                            collate_fn=add_padding)
-    
-    # calculate class imbalance to get pos weight
-    train_mw_count = 0
-    train_non_mw_count = 0
-    for i,(inputs,labels, seq_lens) in enumerate(trainloader):
-        mw_count = (labels==1).sum().item()
-        non_mw_count = (labels==0).sum().item()
-        
-        train_mw_count += mw_count
-        train_non_mw_count += non_mw_count
-    # define pos weight as tensor that is ratio of not mw in train/ mw in train 
-    pos_weight = torch.tensor([train_non_mw_count/train_mw_count]).to(device)
-    
+
     # initialize model, optimizer, loss fntn
     model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
     # use dataparallel if multi gpu
     if multi_gpu:
         model = torch.nn.DataParallel(model)
         
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
     # initialize lists to track loss
@@ -416,7 +407,10 @@ for fold, (train_idx, val_idx) in enumerate(logo.split(train_data, train_data["i
             #backprop
             loss.backward()
             # apply gradient clipping to LSTM layer only
-            torch.nn.utils.clip_grad_norm(model.lstm.parameters(), max_grad_norm)
+            if multi_gpu:
+                torch.nn.utils.clip_grad_norm(model.module.lstm.parameters(), max_grad_norm)
+            else:
+                torch.nn.utils.clip_grad_norm(model.lstm.parameters(), max_grad_norm)
             optimizer.step()
             
             # accumulate loss
@@ -455,10 +449,12 @@ for fold, (train_idx, val_idx) in enumerate(logo.split(train_data, train_data["i
         
         if epoch_val_loss < best_val_loss:
             best_val_loss = epoch_val_loss
+            best_scaler = scaler # save the scaler corresponding to the best fold/ saved model
             if multi_gpu:
                 best_model_state = model.module.state_dict()
             else:
                 best_model_state = model.state_dict()
+                
             print("New best val loss found!")
         # output stats
         print(f"Fold {fold + 1} | Epoch {epoch + 1}| Train Loss: {epoch_loss:.4f} | Val Loss: {epoch_val_loss:.4f}")
@@ -478,6 +474,13 @@ if best_model_state is not None:
     print("Model saved to ", save_path)
 else:
     print("No best model found.")
+    
+if best_scaler is not None:
+    save_path =  f"./Models/Scaler_{curr_datetime}.pk1"
+    joblib.dump(best_scaler, save_path)
+    print("Scaler saved to ", save_path)
+else:
+    print("No best scaler found.")
 
 # plot loss and save plot
 plt.figure(figsize=(10,6))
