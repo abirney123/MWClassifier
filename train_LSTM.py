@@ -226,7 +226,7 @@ class LSTMModel(torch.nn.Module):
         out = self.fc3(out)
         return out
 
-
+"""
 file_path = "./all_subjects_interpolated.csv"
 if not os.path.exists(file_path):
     print(f"Error: Data file not found at {file_path}")
@@ -243,7 +243,8 @@ if "Unnamed: 0" in dfSamples.columns:
 # train test split
 # do subject-wise train test split to ensure model generalizes well to new subjects
 train_data, test_data = split_data(dfSamples)
-
+"""
+train_data = pd.read_csv("./train.csv")
 
 logo = LeaveOneGroupOut()
 groups = train_data["Subject"].values
