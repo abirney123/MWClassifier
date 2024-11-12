@@ -5,7 +5,7 @@ Created on Fri Nov  8 15:22:29 2024
 
 @author: Alaina
 """
-
+# DONT FORGET TO CHANGE ALL "CV#" TO CV CORRESPONDING TO THIS RUN
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
@@ -17,6 +17,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 from sklearn.preprocessing import StandardScaler
+from torchvision.ops import sigmoid_focal_loss
 import time
 import sys
 import joblib
@@ -185,6 +186,7 @@ class LSTMModel(torch.nn.Module):
         self.lstm = torch.nn.LSTM(input_size=input_size, hidden_size=hidden_size,
                                   num_layers=num_layers, batch_first=True,
                                   bidirectional=True, dropout = dropout_p)
+        self.layer_norm = nn.LayerNorm(hidden_size*2)
         self.fc = torch.nn.Linear(hidden_size*2, hidden_size*2)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout_p)
@@ -211,6 +213,7 @@ class LSTMModel(torch.nn.Module):
         #print(f"output after LSTM shape: {out.shape}")
         
         #print("Unpacked output shape ", out.shape)
+        out = self.layer_norm(out)
         out = self.fc(out)
         #print(f"output after fc shape: {out.shape}")
         out = self.relu(out)
@@ -220,7 +223,7 @@ class LSTMModel(torch.nn.Module):
         out = self.fc3(out)
         return out
     
-def save_loss(train_losses, val_losses, fold_number, filename="./Output/all_fold_losses.csv"):
+def save_loss(train_losses, val_losses, fold_number, filename="./Output/cv2/all_fold_losses.csv"):
     """
     
     Saves average training and validation losses for each epoch for each fold
@@ -259,7 +262,7 @@ def save_loss(train_losses, val_losses, fold_number, filename="./Output/all_fold
         print(f"Losses for fold {fold_number+1} saved to {filename}")
     
 def process_one_fold(fold_number, logo, train_data, columns_to_scale, seq_len,
-                     step_size, device, multi_gpu):
+                     step_size, device, multi_gpu, dropout_percent):
     
     for fold, (train_idx, val_idx) in enumerate(logo.split(train_data, train_data["is_MW"],
                                                            groups)):
@@ -269,7 +272,7 @@ def process_one_fold(fold_number, logo, train_data, columns_to_scale, seq_len,
         print("Processing fold ", fold+1, "...")
         print(f"Train fold size: {len(train_idx)}, Val fold size: {len(val_idx)}")
         # define total folds for time estimation
-        total_folds = 19 # 19 subjects -> 19 folds
+        total_folds = 15 # 19 subjects - 4 test subjects -> 15 folds
         
         # create train and validation sets for this fold
         train_fold = train_data.iloc[train_idx]
@@ -278,6 +281,8 @@ def process_one_fold(fold_number, logo, train_data, columns_to_scale, seq_len,
         # get subjects for this fold
         train_subjects = train_fold["Subject"].unique()
         val_subjects = val_fold["Subject"].unique()
+        print(f"Train Subjects: {train_subjects}")
+        print(f"Val Subject: {val_subjects}")
         
         train_fold_scaled = train_fold.copy()
         val_fold_scaled = val_fold.copy()
@@ -369,10 +374,21 @@ def process_one_fold(fold_number, logo, train_data, columns_to_scale, seq_len,
             train_non_mw_count += non_mw_count
             
         print(f"Training Set Ratio (MW/Non-MW): {train_mw_count / train_non_mw_count:.2f}")
+        """
+        # set alpha and gamma for focal loss
+        mw_ratio = train_mw_count/ (train_non_mw_count + train_mw_count)
+        alpha = 1- mw_ratio  # the factor to increase weight of loss for positive class -use class frequency
 
+        print("alpha: ", alpha)
+        if alpha > 1:
+            print("WARNING: alpha is greater than 1.")
+        if alpha <0:
+            print("WARNING: alpha is less than 0.")
+        gamma = 2 # the impact of focusing on hard examples (higher = more emphasis on hard) 
 
+        """
         # initialize model, optimizer, loss fntn
-        model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
+        model = LSTMModel(input_size, hidden_size, num_layers, output_size, dropout_percent).to(device)
         # use dataparallel if multi gpu
         if multi_gpu:
             model = torch.nn.DataParallel(model)
@@ -406,6 +422,7 @@ def process_one_fold(fold_number, logo, train_data, columns_to_scale, seq_len,
                 #print(f"Outputs shape: {outputs.shape}")
                 # reshape labels to calculate loss
                 loss = criterion(outputs, labels.unsqueeze(-1))
+                #loss = sigmoid_focal_loss(outputs, labels.unsqueeze(-1), alpha, gamma, reduction="mean")
                 #backprop
                 loss.backward()
                 # apply gradient clipping to LSTM layer only
@@ -452,6 +469,7 @@ def process_one_fold(fold_number, logo, train_data, columns_to_scale, seq_len,
                     seq_lens = seq_lens.to(device)
                     outputs = model(inputs, seq_lens)
                     loss = criterion(outputs, labels.unsqueeze(-1))
+                    #loss = sigmoid_focal_loss(outputs, labels.unsqueeze(-1), alpha, gamma, reduction="mean")
                     running_val_loss += loss.item()
             # get and store avg val loss for this epoch
             epoch_val_loss = running_val_loss / len(valloader)
@@ -468,9 +486,7 @@ def process_one_fold(fold_number, logo, train_data, columns_to_scale, seq_len,
         plt.ylabel("Average Loss")
         plt.legend()
         # set caption
-        plt.suptitle(f"Training Subjects: {train_subjects}\nValidation Subjects: {val_subjects}",
-                     y=.045, ha="center", fontsize=8, wrap=True)
-        plt.savefig(f"./Plots/LSTM_loss_fold_{fold_number+1}.png")
+        plt.savefig(f"./Plots/cv2/LSTM_loss_fold_{fold_number+1}.png")
         plt.show()
         
         # save model after training complete
@@ -480,10 +496,10 @@ def process_one_fold(fold_number, logo, train_data, columns_to_scale, seq_len,
             best_model_state = model.state_dict()
 
         # save model and scaler
-        save_path = f"./Models/LSTM_fold_{fold_number+1}.pth"
+        save_path = f"./Models/c21/LSTM_fold_{fold_number+1}.pth"
         torch.save(best_model_state, save_path)
         print("Model saved to ", save_path)
-        save_path =  f"./Models/Scaler_fold_{fold_number+1}.pk1"
+        save_path =  f"./Models/cv2/Scaler_fold_{fold_number+1}.pk1"
         joblib.dump(scaler, save_path)
         print("Scaler saved to ", save_path)
         # save loss to csv
@@ -529,18 +545,19 @@ hidden_size = 256
 num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 num_epochs = 25 
-lr = .001
-sequence_length = 2000 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
+lr = .0001
+sequence_length = 2500 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
 # might have been suffering from vanishing gradient with 4k and 8k
 step_size = 250
 batch_size = 128
 columns_to_scale = ["LX", "LY", "RX", "RY"]
+dropout_percent = .4
 
 
 # Train
 try:
     process_one_fold(fold_number, logo, train_data, columns_to_scale, sequence_length,
-                         step_size, device, multi_gpu)
+                         step_size, device, multi_gpu, dropout_percent)
 except RuntimeError as e:
     if "CUDA out of memory" in str(e):
         print("CUDA out of memory.")
