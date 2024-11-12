@@ -27,10 +27,10 @@ input_size = 6
 hidden_size = 256 
 num_layers = 2 # more than 3 isn't usually valuable
 output_size = 1 # how many values to predict for each timestep
-dropout_percent = .3
+dropout_percent = .4
 batch_size = 128
 step_size = 250
-sequence_length = 2000
+sequence_length = 2500
 
 #%% functions
 class LSTMModel(torch.nn.Module):
@@ -42,6 +42,7 @@ class LSTMModel(torch.nn.Module):
         self.lstm = torch.nn.LSTM(input_size=input_size, hidden_size=hidden_size,
                                   num_layers=num_layers, batch_first=True,
                                   bidirectional=True, dropout = dropout_p)
+        self.layer_norm = nn.LayerNorm(hidden_size*2)
         self.fc = torch.nn.Linear(hidden_size*2, hidden_size*2)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout_p)
@@ -61,6 +62,7 @@ class LSTMModel(torch.nn.Module):
         packed_out, _ = self.lstm(packed_x)
         # unpack output
         out, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True) 
+        out = self.layer_norm(out)
         out = self.fc(out)
         out = self.relu(out)
         out = self.dropout(out)
@@ -279,7 +281,7 @@ test_data = load_data(file_path)
 # initialize scaler
 # replace cv0 in path with str corresponding to cv run
 
-scaler = joblib.load("C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\cv0_models\\Scaler_fold_12.pk1")
+scaler = joblib.load("C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\cv1_models\\Scaler_fold_1.pk1")
 
 
 #%% Load saved model 
@@ -291,7 +293,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device: ", device)
 
 # replace cv0 in path with str corresponding to cv run
-model_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\cv0_models\\LSTM_fold_12.pth"
+model_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\cv1_models\\LSTM_fold_1.pth"
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 model.load_state_dict(torch.load(model_path))
 
@@ -407,9 +409,9 @@ sn.heatmap(conf_df, annot=True, cmap="coolwarm", vmin = 0, vmax = 1)
 plt.xlabel("Predicted Value")
 plt.ylabel("True Value")
 # replace fold number with fold number for model being evaluated/ best model
-plt.title("Confusion Matrix: LSTM CV Fold 12")
+plt.title("Confusion Matrix: LSTM CV Fold 1")
 
-plt.savefig(f"C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\plots\\cv0\\LSTM_confmatrix.png")
+plt.savefig(f"C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\plots\\cv1\\LSTM_confmatrix.png")
 
 precision = precision_score(flat_labs, flat_classifications)
 recall = recall_score(flat_labs, flat_classifications)
