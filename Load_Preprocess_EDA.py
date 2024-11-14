@@ -68,7 +68,7 @@ def load_raw_samples(data_path, subjects):
         print(f"Loading subject {subject_num}")
         # change file path depending on if you want to load interpolated data files or not
         #df = pd.read_csv(f"{data_path}{subject_num}_raw_interpolated_pupil_coord.csv", dtype={11:str})
-        df = pd.read_csv(f"{data_path}{subject_num}_raw.csv")
+        df = pd.read_csv(f"{data_path}{subject_num}_raw_with_saccade.csv")
         #df = pd.read_csv(f"{data_path}{subject_num}_raw.csv", dtype={10:str})
         # add subject id column to ensure even distribution when shuffling later for model
         df["Subject"] = f"{subject_num}"
@@ -1316,8 +1316,9 @@ def correlation_heatmap(dfSamples):
     None
     """
     # get rid of subject and sample id
-    data = dfSamples[["RX", "RY", "RPupil_normalized",
-                      "LX", "LY", "LPupil_normalized", "is_MW"]]#"Lblink", "Rblink", "is_MW"]]
+    data = dfSamples[["RX", "RY", "RPupil_normalized", "LX", "LY", "LPupil_normalized", 
+                      "vPeak_L","vPeak_R", "ampDeg_L", "ampDeg_R","saccade_present_L",
+                      "saccade_present_R","is_MW"]]
     
     corr_matrix = data.corr()
     
@@ -1601,18 +1602,109 @@ def coord_over_time(dfSamples):
     plt.legend()
     
     plt.savefig("plots/coord_over_time_avg_sub_run.png")
+    
+def merge_saccade_data(dfSamples, dfSaccades):
+    """
+    Merges the following columns from saccade data with other subject data from 
+    _sample file:
+        - duration
+        - ampDeg
+        - vPeak
+    Additionally, creates a saccade_presence column to indicate whether or not
+    a saccade occurred at each timestep to help the model understand that
+    0 values in saccade columns are due to no saccade being present rather than
+    values actually going to 0. Columns are added eye-wise, meaning we will have
+    duration_L, ampDeg_l, vPeak_L (and analagous for R) for each timestep. A saccade
+    is said to exist for a timestep if the timestep is between tStart and tEnd
+    for the saccade (inclusive).
+    """
+    # initialize new columns in dfSamples - make all val 0 so they are 0 if no saccade found
+    dfSamples["duration_L"] = 0
+    dfSamples["ampDeg_L"] = 0.0
+    dfSamples["vPeak_L"] = 0
+    dfSamples["duration_R"] = 0
+    dfSamples["ampDeg_R"] = 0.0
+    dfSamples["vPeak_R"] = 0
+    dfSamples["saccade_present_L"] = 0
+    dfSamples["saccade_present_R"] = 0
+    
+    
+    # loop through saccade rows
+    for _, saccade_row in dfSaccades.iterrows():
+        # mask to find samples in saccade interval
+        mask = ((dfSamples["tSample"] >= saccade_row["tStart"]) & (dfSamples["tSample"] <= saccade_row["tEnd"]))
+        # add columns to df samples mask based on eye
+        if (saccade_row["eye"] == "L"):
+            dfSamples.loc[mask, "duration_L"] = saccade_row["duration"]
+            dfSamples.loc[mask, "ampDeg_L"] = saccade_row["ampDeg"]
+            dfSamples.loc[mask, "vPeak_L"] = saccade_row["vPeak"]
+            dfSamples.loc[mask, "saccade_present_L"] = 1
+        if (saccade_row["eye"] == "R"):
+            dfSamples.loc[mask, "duration_R"] = saccade_row["duration"]
+            dfSamples.loc[mask, "ampDeg_R"] = saccade_row["ampDeg"]
+            dfSamples.loc[mask, "vPeak_R"] = saccade_row["vPeak"]
+            dfSamples.loc[mask, "saccade_present_R"] = 1
 
+    return dfSamples
+            
+def count_saccades(run_df, column):
+    # count saccades in dataframe column (groups of consecutive 1s)
+    # dataframe should be for one run
+    df = run_df.copy()
+    # ID the start of a new group- assign a new number whenever a new group begins
+    df["new group"] = (df[column] != df[column].shift()).cumsum()
+    
+    # count unique groups by finding unique values in the new group col
+    saccade_count = df.loc[df[column] == 1, "new group"].nunique()
+    return saccade_count
+    
+def plot_saccade_count(dfSamples):
 
-#%%
-data_path = "/Volumes/Lexar/"
-# check to see if there are any values other than L and R for eye in blinks
-dfBlink = pd.read_csv(f"{data_path}MW_Classifier_Data/all_s_blinks.csv")
-print(dfBlink["eye"].unique())
-
-# subject is int in dfSamples when not interpolated
-left_blinks = dfBlink[dfBlink["eye"] == "L"]
-right_blinks = dfBlink[dfBlink["eye"] == "R"]
-
+    #Plot information about saccades for EDA.
+    
+    # create list of subjects and list of counts for each eye
+    subjects = dfSamples["Subject"].unique()
+    saccade_counts_L = []
+    saccade_counts_R = []
+    # loop through each subject and run
+    for subject in subjects:
+        subject_data = dfSamples[dfSamples["Subject"] == subject]
+        # initialize counts for this subject
+        sub_saccades_L = 0
+        sub_saccades_R = 0
+        for run in range(1,6):
+            run_data = subject_data[subject_data["run_num"] == run]
+            # get counts for this subject and run
+            sub_saccades_L += count_saccades(run_data, "saccade_present_L")
+            sub_saccades_R += count_saccades(run_data, "saccade_present_R")
+            
+        # append total counts to list once all runs for this subject have been processed
+        saccade_counts_L.append(sub_saccades_L)
+        saccade_counts_R.append(sub_saccades_R)
+        
+        
+    # plot count for each subject - bar chart
+    plt.figure(figsize=(10,6))
+    x = np.arange(len(subjects))
+    plt.bar(x - .2, saccade_counts_L, .4, label = "Left eye saccades")
+    plt.bar(x + .2, saccade_counts_R, .4, label = "Right eye saccades")
+    plt.xlabel("Subject")
+    plt.xticks(x, subjects, rotation="vertical")
+    plt.ylabel("Number of Saccades")
+    plt.title("Number of Left and Right Eye Saccades per Subject")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    plt.savefig("plots/saccade_counts.png")
+    
+    
+    # plot velocity as fntn of itme for each subject and run
+    # plot amplitude as fntn of time for each subject and run 
+    # amplitude and velocity will be the same throughout each saccade so I could 
+    # just grab the first instance when saccade_present changes to 1 to represent a single saccade
+    
+    # plot saccade as fntn of time for each subject and run - scatter plot with different colors for L and R, point if corresponding
+    # saccade present col = 1
 
 #%%
 
@@ -2057,7 +2149,6 @@ else:
 """
 
 
-
 #%% Interpolation, preprocessing, extraction... latest pipeline
 # no forward fill, use saccades, no s10127
 
@@ -2069,6 +2160,7 @@ total_runs = len(subjects) * 5 # 5 runs for each subject
 interpolated_runs = 0 # counter
 
 # within-subject normalization after interpolation (during preprocessing)
+# adding saccade data just after interpolation
 for subject_num in subjects:
     for run_num in range(1,6):
         subject_str = str(subject_num)
@@ -2092,17 +2184,74 @@ for subject_num in subjects:
         dfSamples = interpolate_coordinates_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
         # pupil interpolation
         dfSamples = interpolate_pupil_over_blinksv2_nomerge(dfSamples, dfBlink, dfSaccades, subject_str, run_num)
+        # add saccade data here 
+        dfSamples = merge_saccade_data(dfSamples)
+        
         interpolated_runs += 1
         elapsed_time = time.time() - start_time
         avg_interp_time = elapsed_time / interpolated_runs
         remaining_time = avg_interp_time * (total_runs - interpolated_runs)
         print(f"Elapsed time: {elapsed_time //60:.0f} min {elapsed_time % 60:.0f} sec")
         print(f"Estimated remaining time: {remaining_time // 60:.0f} min {remaining_time % 60:.0f} sec")
+      
+#%% test adding saccade data just sub 10014
+
+
+
+s014_r1_interp = pd.read_csv("/Volumes/Lexar/CSV_Samples/10014/s014_r1_Sample_Interpolated.csv")
+s014_r1_saccades = pd.read_csv("/Volumes/brainlab/Mindless Reading/DataCollection/s10014/eye/s014_r1_2023_11_29_09_28_data/s014_r1_2023_11_29_09_28_Saccade.csv")
+
+s014_r1_inter_with_saccade = merge_saccade_data(s014_r1_interp, s014_r1_saccades)
+print(s014_r1_inter_with_saccade.columns)
+print(s014_r1_inter_with_saccade.isna().sum())
+pd.set_option('display.max_columns', None)
+print(s014_r1_inter_with_saccade.describe())
+#%%
+# add saccade columns to each interpolated data file then extract
+subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
+            10100,10103,10110,10111,10115,10117,10121,10125]
+# set up variables for time estimation
+start_time = time.time()
+total_runs = len(subjects) * 5 # 5 runs for each subject
+add_saccade_runs = 0 # counter
+
+for subject_num in subjects:
+    for run_num in range(1,6):
+        # load interpolated samples for this sub and run
+        # load saccade for this sub and run
+        # add saccade data
+        subject_str = str(subject_num)
+        foldernames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/")
+        matching_folders = [folder for folder in foldernames if (folder.startswith(f"s{subject_str[-3:]}_r{run_num}") & folder.endswith("data"))]
+        folder = matching_folders[0]
+        filenames = os.listdir(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}")
+        matching_saccade_filenames = [file for file in filenames if (file.endswith("Saccade.csv") and not file.startswith("._"))]
+        saccade_file = matching_saccade_filenames[0]
+        print("saccade file", saccade_file)
+        dfSaccades = pd.read_csv(f"/Volumes/brainlab/Mindless Reading/DataCollection/s{subject_num}/eye/{folder}/{saccade_file}")
+        # get interpolated data file
+        interpolated_file = f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated.csv"
+        interpolated_data = pd.read_csv(interpolated_file)
+        print("interpolated file", interpolated_file)
+        # drop unnamed: 0
+        if "Unnamed: 0" in interpolated_data.columns:
+            interpolated_data = interpolated_data.drop("Unnamed: 0", axis=1)
+        # add saccade data 
+        interpolated_with_saccade = merge_saccade_data(interpolated_data, dfSaccades)
+        # save interpolated with saccade
+        interpolated_with_saccade.to_csv(f"/Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_str[-3:]}_r{run_num}_Sample_Interpolated_with_Saccade.csv", index=False)
+        
+        add_saccade_runs += 1
+        elapsed_time = time.time() - start_time
+        avg_interp_time = elapsed_time / add_saccade_runs
+        remaining_time = avg_interp_time * (total_runs - add_saccade_runs)
+        print(f"Elapsed time: {elapsed_time //60:.0f} min {elapsed_time % 60:.0f} sec")
+        print(f"Estimated remaining time: {remaining_time // 60:.0f} min {remaining_time % 60:.0f} sec")
         
 start_time = time.time()
 extracted_subjects = 0
 # extract interpolated from
-# /Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated.csv
+# /Volumes/Lexar/CSV_Samples/{subject_num}/s{subject_num[-3:]}_r{run}_Sample_Interpolated_with_Saccade.csv
 for subject in subjects:
     folder_path = f"/Volumes/Lexar/CSV_Samples/{subject}"
     extract(subject, folder_path)
@@ -2113,7 +2262,7 @@ for subject in subjects:
     print(f"Elapsed time: {elapsed_time //60:.0f} min {elapsed_time % 60:.0f} sec")
     print(f"Estimated remaining time: {remaining_time // 60:.0f} min {remaining_time % 60:.0f} sec")
     
-# now files are at /Volumes/Lexar/MW_Classifier_Data/{sub_id}_raw.csv
+# now files are at /Volumes/Lexar/MW_Classifier_Data/{sub_id}_raw_with_saccade.csv
     
 #%%%
 # start here to plot and save csv 
@@ -2121,38 +2270,49 @@ subjects = [10014,10052,10059,10073,10080,10081,10084,10085,10089,10092,10094,
             10100,10103,10110,10111,10115,10117,10121,10125]
 data_path = "/Volumes/Lexar/MW_Classifier_Data/"
 dfSamples = load_raw_samples(data_path, subjects)
-dfSamples = preprocess(dfSamples)
+dfSamples = preprocess(dfSamples) # this is where pupil normalization occurs
 
-#%%
 print(dfSamples.columns)
 
 
 print(dfSamples["Subject"])
 
 
-print(dfSamples["LPupil_normalized"].min())
-print(dfSamples["RPupil_normalized"].min())
+#print(dfSamples["LPupil_normalized"].min())
+#print(dfSamples["RPupil_normalized"].min())
+
 #%%
+print(dfSamples.columns)
+
+#%%
+# change corr heatmap and set up new plotting fntns before running
 # drop cols if needed
-dfSamples = dfSamples.drop(["Unnamed: 0", "LPupil", "RPupil"], axis=1)
+# dropping duration cols too because they are redundant, realized after adding (since we have repeated saccade_present indicators for each timestep)
+#dfSamples = dfSamples.drop(["LPupil", "RPupil", "duration_L", "duration_R"], axis=1)
+
 
 # subject should be str for plotting
 
 # plots
 print("creating corr heatmap")
-correlation_heatmap(dfSamples)
-print("freq by subject")
-mw_freq_by_subject(dfSamples)
-print("mw over time")
-mw_over_time(dfSamples)
-print("pupil over time")
-pupil_over_time(dfSamples)
-print("pupil subject run")
-pupil_subject_run(dfSamples, subjects)
-print("eye coords")
-eye_coordinates(dfSamples, subjects)
-print("coord over time")
-coord_over_time(dfSamples)
+correlation_heatmap(dfSamples) 
+print("plotting saccade data")
+plot_saccade_count(dfSamples)
+# commenting out plots that don't change w new saccade cols- already have these plots
+#print("freq by subject")
+#mw_freq_by_subject(dfSamples)
+#print("mw over time")
+#mw_over_time(dfSamples)
+#print("pupil over time")
+#pupil_over_time(dfSamples)
+#print("pupil subject run")
+#pupil_subject_run(dfSamples, subjects)
+#print("eye coords")
+#eye_coordinates(dfSamples, subjects)
+#print("coord over time")
+#coord_over_time(dfSamples)
+
+
 
 #%% check for missing values
 
@@ -2163,14 +2323,13 @@ print(dfSamples.columns)
 dfSamples = dfSamples.dropna()
 print(dfSamples.isna().sum())
 #%% 
-# drop unnecessary cols
-#dfSamples = dfSamples.drop(columns=["LPupil", "RPupil", "Unnamed: 0"])
+
 # save to csv in netfiles
 print("saving to netfiles...")
-dfSamples.to_csv("/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated.csv")
-# and lexar
+dfSamples.to_csv("/Volumes/brainlab/Mindless Reading/neuralnet_classifier/all_subjects_interpolated_with_saccade.csv")
+# and lexar 
 print("saving to lexar...")
-dfSamples.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated.csv")
+dfSamples.to_csv("/Volumes/Lexar/MW_Classifier_Data/all_subjects_interpolated_with_saccade.csv")
 
 #%% 
 # check if num rows misisng page num is the same as num missing run num for raw files
