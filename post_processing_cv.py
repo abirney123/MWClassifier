@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt
 # find best model- use all losses csv to find the fold corresponding to the 
 # lowest validation loss for epoch 25
 # change cv0 in file path depending on which cv run you're evaluating
-all_losses = pd.read_csv("C:/Users/abirn/OneDrive/Desktop/MW_Classifier/all_fold_losses_cv0.csv")
+all_losses = pd.read_csv("C:/Users/abirn/OneDrive/Desktop/MW_Classifier/all_fold_losses_cv2.csv")
 print(all_losses.columns)
 # where Epoch = 25, find min val loss and print fold
 #%%
@@ -39,5 +39,5 @@ plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.legend()
 # change cv0 in path to save fig depending on cv run
-plt.savefig("C:/Users/abirn/OneDrive/Desktop/MW_Classifier/plots/cv0/avg_loss_all_folds.png")
+plt.savefig("C:/Users/abirn/OneDrive/Desktop/MW_Classifier/plots/cv2/avg_loss_all_folds.png")
 plt.show()

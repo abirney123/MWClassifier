@@ -6,6 +6,7 @@ Created on Sat Sep 28 19:53:46 2024
 @author: Alaina
 Use TorchGPU conda environment 
 
+
 """
 import pandas as pd
 import torch
@@ -24,6 +25,7 @@ from sklearn.preprocessing import StandardScaler
 import time
 from sklearn.metrics import confusion_matrix, precision_score, recall_score
 import seaborn as sn
+#from torchvision.ops import sigmoid_focal_loss
 
 #%%
 
@@ -193,7 +195,7 @@ def add_padding(batch):
 
 # define custom Dataset class
 class WindowedTimeSeriesDataset(Dataset):
-    def __init__(self, data, sequence_length=4000, step_size=1000, scaler=None, fit_scaler=False, columns_to_scale=None):
+    def __init__(self, data, sequence_length=2500, step_size=250):
         """
         Params:
             - data: The dataset 
@@ -206,26 +208,13 @@ class WindowedTimeSeriesDataset(Dataset):
         self.data = data
         self.sequence_length = sequence_length
         self.step_size = step_size
-        self.columns_to_scale = columns_to_scale
-        
-        if self.columns_to_scale is not None:
-            self.column_indices = [data.columns.get_loc(col) for col in columns_to_scale]
             
         # separate features and labels
-        self.features = data.drop(columns=["is_MW"]).values
+        # exclude non feature columns from features, but keep in dataset for logocv
+        self.features = data.drop(labels=["is_MW", "page_num", "run_num","sample_id",
+                                   "tSample", "Subject", "tSample_normalized",
+                                   "mw_proportion", "mw_bin"], axis=1).values
         self.labels = data["is_MW"].values
-        
-
-        
-        if scaler is None:
-            self.scaler = StandardScaler()
-        else:
-            self.scaler = scaler
-            
-        if fit_scaler:
-            self.features[:, self.column_indices] = self.scaler.fit_transform(self.features[:,self.column_indices])
-        else:
-            self.features[:,self.column_indices] = self.scaler.transform(self.features[:,self.column_indices])
 
     
     def __len__(self):
@@ -274,6 +263,7 @@ class LSTMModel(torch.nn.Module):
         self.lstm = torch.nn.LSTM(input_size=input_size, hidden_size=hidden_size,
                                   num_layers=num_layers, batch_first=True,
                                   bidirectional=True, dropout = dropout_p)
+        #self.layer_norm = nn.LayerNorm(hidden_size*2)
         self.fc = torch.nn.Linear(hidden_size*2, hidden_size*2)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout_p)
@@ -293,6 +283,7 @@ class LSTMModel(torch.nn.Module):
         packed_out, _ = self.lstm(packed_x)
         # unpack output
         out, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True) 
+        #out = self.layer_norm(out)
         out = self.fc(out)
         out = self.relu(out)
         out = self.dropout(out)
@@ -301,43 +292,17 @@ class LSTMModel(torch.nn.Module):
         out = self.fc3(out)
         return out
 
-#%%
+#%% old- before splitting was done in separate script
 
 
 file_path = "E:\\MW_Classifier_Data\\all_subjects_interpolated.csv"
 dfSamples = load_data(file_path)
 
-#%%
+
 # check for missing values and confirm dtypes are correct
 print(dfSamples.dtypes)
 print(dfSamples.isna().sum())
 
-#counts = dfSamples.groupby(["Subject", "run_num"]).size().reset_index(name='counts')
-
-# Display the counts for each subject-run pair
-#print(counts)
-#rare_cases = counts[counts["counts"] < 2]
-#print("Subject-Run pairs with fewer than 2 rows of data:")
-#print(rare_cases)
-
-
-#%%
-"""
-not using this rn, results in too few instances of mw
-# combine duplicate rows
-print("df samples length before combining duplicates")
-print(len(dfSamples))
-print("mw instances before combining duplicates")
-samples_mw_count = dfSamples['is_MW'].sum()
-print(samples_mw_count)
-
-dfSamples = combine_records(dfSamples)
-print("df samples length after combining duplicates")
-print(len(dfSamples))
-print("mw instances after combining duplicates")
-samples_mw_count = dfSamples['is_MW'].sum()
-print(samples_mw_count)
-"""
 # train test split
 # do subject-wise train test split to ensure model generalizes well to new subjects
 train_data, test_data = split_data(dfSamples)
@@ -351,6 +316,29 @@ test_data = test_data.drop(columns=["page_num", "run_num", "sample_id",
                                     "mw_proportion", "mw_bin"])
 
 print(train_data.columns)
+
+#%% load and scale data
+
+train_data_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\train.csv"
+test_data_path = "C:\\Users\\abirn\\OneDrive\\Desktop\\MW_Classifier\\test.csv"
+
+train_data = load_data(train_data_path)
+test_data = load_data(test_data_path)
+
+print(train_data.columns)
+print(test_data.columns)
+
+scaler = StandardScaler()
+columns_to_scale = ["LX", "LY", "RX", "RY"]
+
+train_scaled = train_data.copy()
+test_scaled = test_data.copy()
+
+# fit transform train
+train_scaled.loc[:,columns_to_scale] = scaler.fit_transform(train_data[columns_to_scale])
+# transform test
+test_scaled.loc[:,columns_to_scale] = scaler.transform(test_data[columns_to_scale])
+
 
 #%%
 # find mean mw duration in train set
@@ -366,24 +354,17 @@ mean_mw_dur = mw_ep_lens.mean()
 print(mean_mw_dur)
 
 #%%
+# seq len set very small for testing
 # create datasets
 # set parameters
-sequence_length = 2500 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
+sequence_length = 2500
 # might have been suffering from vanishing gradient with 4k and 8k
 step_size = 250
-columns_to_scale = ["LX", "LY", "RX", "RY"]
-# initialize scaler
-scaler = StandardScaler()
-# instantiate - scaling applied in dataset class
-train_dataset = WindowedTimeSeriesDataset(train_data, sequence_length,
-                                          step_size, scaler = scaler,
-                                          fit_scaler = True,
-                                          columns_to_scale = columns_to_scale)
-test_dataset = WindowedTimeSeriesDataset(test_data, sequence_length,
-                                         step_size,scaler = scaler,
-                                         fit_scaler = False,
-                                         columns_to_scale = columns_to_scale)
-# num sequencecs for training
+
+# instantiate 
+train_dataset = WindowedTimeSeriesDataset(train_scaled, sequence_length,step_size)
+test_dataset = WindowedTimeSeriesDataset(test_scaled, sequence_length,step_size)
+# num training sequences
 print(len(train_dataset))
 
 #%% set up weightedRandomSampler for sequences
@@ -415,8 +396,8 @@ majority_labels = torch.tensor(majority_labels)
 print("getting class weights")
 not_mw = (majority_labels == 0).sum()
 mw = (majority_labels == 1).sum()
-multiplier = 1.15
-class_weights = [1.0/not_mw, (1.0/mw)*multiplier]
+#multiplier = 1.15
+class_weights = [1.0/not_mw, (1.0/mw)]
 print("assigning weights")
 # assign each sample a weight based on class & class weights
 sequence_weights = torch.tensor([class_weights[label] for label in majority_labels],
@@ -436,7 +417,7 @@ if len(majority_labels) != len(train_dataset):
 # specify num workers?
 # use collate fntn to add padding when sequences vary in length (we have more
 # samples for some subjects than others) 
-batch_size = 64
+batch_size = 128
 trainloader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False,
                          sampler=weighted_sampler, collate_fn = add_padding)
 
@@ -530,24 +511,48 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 # set max grad norm for gradient clipping
 max_grad_norm = 1.0
 
-input_size = len(train_data.columns)-1 # num features per timestep, num columns in train or test -1 for labels
-hidden_size = 128#256
-num_layers = 1 #2 # more than 3 isn't usually valuable, starting with 1
+input_size = 6 # num features per timestep, num columns in train or test -1 for labels
+hidden_size = 256
+num_layers = 2 #2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
-num_epochs = 25 
-lr = .001
+num_epochs = 25
+lr = .0005
+dropout_p = .35
+"""
+# https://arxiv.org/pdf/1708.02002 focal loss paper
+
+# get frequency of minority class
+train_mw_count = 0
+train_non_mw_count = 0
+for i,(inputs,labels, seq_lens) in enumerate(trainloader):
+    mw_count = (labels==1).sum().item()
+    non_mw_count = (labels==0).sum().item()
+    
+    train_mw_count += mw_count
+    train_non_mw_count += non_mw_count
+    
+mw_ratio = train_mw_count/ (train_non_mw_count + train_mw_count)
+alpha = 1- mw_ratio  # the factor to increase weight of loss for positive class -use relative frequency of majority class
+
+print("alpha: ", alpha)
+if alpha > 1:
+    print("WARNING: alpha is greater than 1.")
+if alpha <0:
+    print("WARNING: alpha is less than 0.")
+gamma = 2 # the impact of focusing on hard examples (higher = more emphasis on hard) set to 1 since classes are almost balanced after WRS
+"""
 # following pos weight is for sequence len 4k batch size 64 step size 500- double check before using again though, might have been typo to have 1 on the end for not mw
 #pos_weight = torch.tensor([294780851/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
 # for seq len 8k, batch size 32, step size 250
 #pos_weight = torch.tensor([29478085/2830876]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
 #pos_weight = torch.tensor([31001855/2883141]).to(device) # pos weight is ratio of not MW/ MW to give more weight to pos class
-pos_weight = torch.tensor([180176844/158628156]).to(device)
+#pos_weight = torch.tensor([180176844/158628156]).to(device)
 
 # instantiate LSTM and move to GPU
-model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
+model = LSTMModel(input_size, hidden_size, num_layers, output_size, dropout_p).to(device)
 
-criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight) # BCE with logits bc binary classification
-#criterion = nn.BCEWithLogitsLoss()
+#criterion = nn.BCEWithLogitsLoss() # BCE with logits bc binary classification
+criterion = nn.BCEWithLogitsLoss()
 # pos weight to help with class imbalance
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -573,6 +578,7 @@ for epoch in range(num_epochs):
         outputs = model(inputs, seq_lens) # pass sequence lengths as well for packing padding
         # reshape labels to calculate loss
         loss = criterion(outputs, labels.unsqueeze(-1))
+        #loss = sigmoid_focal_loss(outputs, labels.unsqueeze(-1), alpha, gamma, reduction="mean")
         #backprop
         loss.backward()
         # apply gradient clipping to LSTM layer only
@@ -674,7 +680,7 @@ print(min(start_timesteps))
 print(max(start_timesteps))
 """
 
-#%%
+
 
 # aggregate classifications across overlapping windows
 #start_timesteps = [item for sublist in start_timesteps for item in sublist]

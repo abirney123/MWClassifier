@@ -4,6 +4,8 @@
 Created on Fri Nov  8 15:22:29 2024
 
 @author: Alaina
+WILL NEED TO BASE VAL SPLIT ON OG_SUBJECT IF USING ONE HOT DATA
+DOES NOT CONTAIN DATASET CLASS CHANGES FOR ONE HOT DATA
 """
 # DONT FORGET TO CHANGE ALL "CV#" TO CV CORRESPONDING TO THIS RUN
 import pandas as pd
@@ -44,62 +46,7 @@ def load_data(file_path, chunksize = 500000):
         dfSamples.drop(labels=["Unnamed: 0"], axis=1, inplace=True)
     return dfSamples
 
-def split_data(dfSamples):
-    # maintain even distribution of subjects and runs in train and test
-    # and account for proportion of MW occurances in each subject to ensure 
-    # train and test have balanced distribution of MW occurances
-    # so model generalizes well to new subjects and runs
-    
-    # calculate MW proportion per subject
-    sub_mw_proportions = dfSamples.groupby(["Subject","run_num"])["is_MW"].mean().reset_index()
-    # rename cols for clarity
-    sub_mw_proportions.columns = ["Subject", "run_num", "mw_proportion"]
-    
-    # use pd cut to separate mw proportion into bins to represent low medium and high mw occurances
-    sub_mw_proportions["mw_bin"] = pd.cut(sub_mw_proportions["mw_proportion"], bins=3, labels=["low", "medium", "high"])
-    
-    # split sub run pairs into train and test 
-    # shuffle is true here because just shuffling the sub run pairs, not the 
-    # time series data
-    # stratified split by mw proportion 
-    train_pairs, test_pairs = train_test_split(sub_mw_proportions,
-                                               test_size = .2, random_state=42,
-                                               stratify=sub_mw_proportions["mw_bin"])
-    
-    
-    # merge back to train and test to get full sets
-    train_data = pd.merge(dfSamples, train_pairs, on=["Subject", "run_num"])
-    test_data = pd.merge(dfSamples, test_pairs, on=["Subject", "run_num"])
-    
-    # verify distribution looks good
-    train_mw_p = train_data["is_MW"].mean()
-    test_mw_p = test_data["is_MW"].mean()
-    
-    print("Mean of is_MW in train set: ", train_mw_p)
-    print("Mean of is_MW in test set: ", test_mw_p)
-    return train_data, test_data
 
-def combine_records(df :pd.DataFrame) ->pd.DataFrame:
-    # written by Omar Awajan, adapted by Alaina Birney
-    # create mask where True means curr row is different from previous row
-    # across all feature columns
-    mask = ( 
-        (df['LX'] != df['LX'].shift()) 
-        & (df['LY'] != df['LY'].shift()) 
-        & (df['LPupil_normalized'] != df['LPupil_normalized'].shift()) 
-        & (df['RX'] != df['RX'].shift()) 
-        & (df['RY'] != df['RY'].shift()) 
-        & (df['RPupil_normalized'] != df['RPupil_normalized'].shift())
-        & (df["Lblink"] != df["Lblink"].shift())
-        & (df["Rblink"] != df["Rblink"].shift())
-        )
-    # Group duplicates 
-    df['combined'] = mask.cumsum()
-    # filter to get the first occurance of each combined group
-    df_filtered = df.loc[df.groupby("combined").head(1).index]
-    # drop combined column
-    df_filtered = df_filtered.drop(labels=["combined"], axis=1)
-    return df_filtered
 
 def add_padding(batch):
     # unpack inputs and labels
