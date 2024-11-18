@@ -11,6 +11,7 @@ dont forget to change:
     - model path
     - conf matrix save path
     - subject error plot save path
+    - use old dataset class if using model trained with that (anything prior to 11-18 4pm)
 """
 import pandas as pd
 import torch
@@ -119,6 +120,96 @@ def add_padding(batch):
 
 # define custom Dataset class
 class WindowedTimeSeriesDataset(Dataset):
+    def __init__(self, data, sequence_length=2500, step_size=250):
+        """
+        Params:
+            - data: The dataset 
+            - sequence_length: The sequence length for the LSTM
+            - step_size: The step size for the sliding window
+            - scaler: scaler object to use. if none specified, standardScaler will be used
+            - fit_scaler: whether or not to fit scaler (only fit to training data)
+            - columns_to_scale: The columns to apply the scaler to 
+        """
+        self.data = data
+        self.sequence_length = sequence_length
+        self.step_size = step_size
+            
+        # separate features and labels
+        # exclude non feature columns from features, but keep in dataset for logocv
+        self.features = data.drop(labels=["is_MW", "page_num", "run_num","sample_id",
+                                   "tSample", "Subject", "mw_proportion", "mw_bin"], axis=1).values
+        #self.features = data.drop(labels=["is_MW", "page_num", "run_num","sample_id",
+                                   #"tSample", "OG_subjects", "tSample_normalized",
+                                   #"mw_proportion", "mw_bin"], axis=1).values
+        self.labels = data["is_MW"].values
+        # save subject column for error analysis (OG subjects if one hot data)
+        #self.subjects = data["OG_subjects"].values
+        self.subjects = data["Subject"].values
+        # save subject level timestamps for error analysis
+        self.timestamps = data["tSample_normalized"].values
+        self.runs = data["run_num"].values
+        #self.subjects = data["Subject"].values
+        self.valid_indices = self.compute_valid_indices()
+        
+    def compute_valid_indices(self):
+        # find valid indices so that windows only contain one subject and run
+        valid_indices = []
+        num_samples = len(self.data)
+        
+        subjects = np.array(self.subjects)
+        runs=np.array(self.runs)
+        
+        # find starting indices
+        for start_idx in range(0, num_samples - self.sequence_length +1, self.step_size):
+            end_idx = start_idx + self.sequence_length
+            
+            # check if window spans mult subs or runs
+            if np.all(subjects[start_idx:end_idx] == subjects[start_idx]) and \
+                np.all(runs[start_idx:end_idx] == runs[start_idx]):
+                    valid_indices.append(start_idx)
+        print(f"Total valid windows: {len(valid_indices)}")
+        return valid_indices
+
+    
+    def __len__(self):
+        # num valid sequences relative to sequence length and step size
+        return (len(self.valid_indices))
+    
+    def __getitem__(self, idx):
+        # prevent the creation of sequences of length 0- truncate sequences when they are too long and add padding to match length
+        # get start and end of sliding window
+        start_idx = self.valid_indices[idx]
+        end_idx = start_idx + self.sequence_length
+        
+        # skip incomplete sequences that might arise at the end of the dataset
+        """
+        if end_idx > len(self.features):
+            print(f"Skipping sequence at index {idx}: end_idx ({end_idx}) exceeds data length ({len(self.features)}).")
+            return None
+        """
+        #print(f"Index {idx}: start={start_idx}, end={end_idx}, available={len(self.features)}")
+        """
+        if start_idx >= len(self.features) or end_idx > len(self.features):
+            raise ValueError(f"Invalid sequence at index {idx}: start={start_idx}, end={end_idx}, length={len(self.features)}")
+        """
+        # get sequence of features
+        x = self.features[start_idx:end_idx]
+        # get corresponding labels (same length as sequence because many to many)
+        y = self.labels[start_idx:end_idx]
+        subject = self.subjects[start_idx: end_idx]
+        timestamp = self.timestamps[start_idx:end_idx]
+        run = self.runs[start_idx:end_idx]
+        
+        """
+        # results in a bunch of sequences full of 0s after minibatch 501
+        if len(x) < sequence_length:
+            padding_length = self.sequence_length - len(x)
+            x = np.pad(x, ((0, padding_length), (0,0)), "constant")
+            y = np.pad(y,(0,padding_length), "constant")
+        """
+        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32), subject, timestamp, run
+
+class WindowedTimeSeriesDatasetOLD(Dataset):
     def __init__(self, data, sequence_length=2500, step_size=250):
         """
         Params:
