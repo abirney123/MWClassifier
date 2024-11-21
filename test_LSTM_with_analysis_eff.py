@@ -31,14 +31,14 @@ import joblib
 
 # hyperparams
 # one hot 31 saccades 12 interp 6 + 1 to all when time is added as feature
-input_size = 7
+input_size = 6
 hidden_size = 256 
 num_layers = 2 # more than 3 isn't usually valuable
 output_size = 1 # how many values to predict for each timestep
 dropout_percent = .35
 batch_size = 128
 step_size = 250
-sequence_length = 4000
+sequence_length = 2000
 
 # functions
 class LSTMModel(torch.nn.Module):
@@ -126,9 +126,6 @@ class WindowedTimeSeriesDataset(Dataset):
             - data: The dataset 
             - sequence_length: The sequence length for the LSTM
             - step_size: The step size for the sliding window
-            - scaler: scaler object to use. if none specified, standardScaler will be used
-            - fit_scaler: whether or not to fit scaler (only fit to training data)
-            - columns_to_scale: The columns to apply the scaler to 
         """
         self.data = data
         self.sequence_length = sequence_length
@@ -137,7 +134,7 @@ class WindowedTimeSeriesDataset(Dataset):
         # separate features and labels
         # exclude non feature columns from features, but keep in dataset for logocv
         self.features = data.drop(labels=["is_MW", "page_num", "run_num","sample_id",
-                                   "tSample", "Subject", "mw_proportion", "mw_bin"], axis=1).values
+                                   "tSample", "Subject", "mw_proportion", "mw_bin", "tSample_normalized"], axis=1).values
         #self.features = data.drop(labels=["is_MW", "page_num", "run_num","sample_id",
                                    #"tSample", "OG_subjects", "tSample_normalized",
                                    #"mw_proportion", "mw_bin"], axis=1).values
@@ -148,6 +145,7 @@ class WindowedTimeSeriesDataset(Dataset):
         # save subject level timestamps for error analysis
         self.timestamps = data["tSample_normalized"].values
         self.runs = data["run_num"].values
+        self.pages = data["page_num"].values
         #self.subjects = data["Subject"].values
         self.valid_indices = self.compute_valid_indices()
         
@@ -158,14 +156,16 @@ class WindowedTimeSeriesDataset(Dataset):
         
         subjects = np.array(self.subjects)
         runs=np.array(self.runs)
+        pages=np.array(self.pages)
         
         # find starting indices
         for start_idx in range(0, num_samples - self.sequence_length +1, self.step_size):
             end_idx = start_idx + self.sequence_length
             
             # check if window spans mult subs or runs
-            if np.all(subjects[start_idx:end_idx] == subjects[start_idx]) and \
-                np.all(runs[start_idx:end_idx] == runs[start_idx]):
+            if (np.all(subjects[start_idx:end_idx] == subjects[start_idx]) and 
+                np.all(runs[start_idx:end_idx] == runs[start_idx]) and
+                np.all(pages[start_idx:end_idx] == pages[start_idx])):
                     valid_indices.append(start_idx)
         print(f"Total valid windows: {len(valid_indices)}")
         return valid_indices
@@ -208,6 +208,7 @@ class WindowedTimeSeriesDataset(Dataset):
             y = np.pad(y,(0,padding_length), "constant")
         """
         return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32), subject, timestamp, run
+
 
 class WindowedTimeSeriesDatasetOLD(Dataset):
     def __init__(self, data, sequence_length=2500, step_size=250):
@@ -419,7 +420,7 @@ def plot_err_over_time(results, subject):
     fig.suptitle(f"Errors Over Time: Subject {subject}")
     plt.tight_layout(rect=[0,0,1,.9])
     #plt.legend(loc="upper right")
-    plt.savefig(f"./Plots/Errors_over_time_s{subject}_11-18.png")
+    plt.savefig(f"./Plots/Errors_over_time_s{subject}_11-21_2.png")
     plt.close()
 
 
@@ -431,7 +432,7 @@ test_data = load_data(file_path)
 
 # initialize scaler
 
-scaler = joblib.load("./Models/Scaler_2024-11-18_05-00-40.pk1")
+scaler = joblib.load("./Models/Scaler_2024-11-21_14-14-59.pk1")
 # Load saved model 
 print(torch.__version__)            # Check PyTorch version
 print(torch.cuda.is_available())    # Check if PyTorch detects CUDA
@@ -441,22 +442,22 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device: ", device)
 
 # replace cv0 in path with str corresponding to cv run
-model_path = "./Models/LSTM_2024-11-18_05-00-40.pth"
+model_path = "./Models/LSTM_2024-11-21_14-14-59.pth"
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 model.load_state_dict(torch.load(model_path))
 print("model loaded")
 # apply scaler, define dataset and dataloader
-columns_to_scale = ["LX", "LY", "RX", "RY"]
+columns_to_scale = ["LX", "LY", "RX", "RY", "LPupil_normalized", "RPupil_normalized"]
 #columns_to_scale = ["LX", "LY", "RX", "RY", "ampDeg_L", "ampDeg_R", "vPeak_L", "vPeak_R"]
 test_scaled = test_data.copy()
 test_scaled[columns_to_scale] = test_scaled[columns_to_scale].astype("float64")
 test_scaled.loc[:,columns_to_scale] = scaler.transform(test_scaled[columns_to_scale])
-
+"""
 time_scaler = MinMaxScaler()
 
 test_scaled["tSample_normalized"] = test_scaled.groupby(["Subject", "run_num"])["tSample_normalized"].transform(
     lambda x: time_scaler.fit_transform(x.values.reshape(-1,1)).flatten())
-
+"""
 print("data scaled")
 # get unique subjects for analysis later - use subject if no one hot, OG subject otherwise
 test_subjects = test_data["Subject"].unique()
@@ -606,7 +607,7 @@ plt.ylabel("True Value")
 # replace fold number with fold number for model being evaluated/ best model
 plt.title("Confusion Matrix")
 
-plt.savefig(f"./Plots/LSTM_confmatrix_11-18.png")
+plt.savefig(f"./Plots/LSTM_confmatrix_11-21_2.png")
 
 precision = precision_score(flat_labs, flat_classifications)
 recall = recall_score(flat_labs, flat_classifications)

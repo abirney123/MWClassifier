@@ -3,6 +3,8 @@
 Created on Mon Nov 18 15:38:22 2024
 using pos weight and no weighted random sampler
 contains new dataset class that ensures windows only contain a single subject and run
+currently set to use train_balanced_no_empty_runs
+currently not dropping keep in dataset
 
 @author: abirn
 Gradient autoclipping adapted from: https://github.com/pseeth/autoclip/blob/master/autoclip.py
@@ -84,7 +86,7 @@ class WindowedTimeSeriesDataset(Dataset):
         # separate features and labels
         # exclude non feature columns from features, but keep in dataset for logocv
         self.features = data.drop(labels=["is_MW", "page_num", "run_num","sample_id",
-                                   "tSample", "Subject", "mw_proportion", "mw_bin"], axis=1).values
+                                   "tSample", "Subject", "mw_proportion", "mw_bin", "tSample_normalized"], axis=1).values
         #self.features = data.drop(labels=["is_MW", "page_num", "run_num","sample_id",
                                    #"tSample", "OG_subjects", "tSample_normalized",
                                    #"mw_proportion", "mw_bin"], axis=1).values
@@ -95,6 +97,7 @@ class WindowedTimeSeriesDataset(Dataset):
         # save subject level timestamps for error analysis
         self.timestamps = data["tSample_normalized"].values
         self.runs = data["run_num"].values
+        self.pages = data["page_num"].values
         #self.subjects = data["Subject"].values
         self.valid_indices = self.compute_valid_indices()
         
@@ -105,14 +108,16 @@ class WindowedTimeSeriesDataset(Dataset):
         
         subjects = np.array(self.subjects)
         runs=np.array(self.runs)
+        pages=np.array(self.pages)
         
         # find starting indices
         for start_idx in range(0, num_samples - self.sequence_length +1, self.step_size):
             end_idx = start_idx + self.sequence_length
             
             # check if window spans mult subs or runs
-            if np.all(subjects[start_idx:end_idx] == subjects[start_idx]) and \
-                np.all(runs[start_idx:end_idx] == runs[start_idx]):
+            if (np.all(subjects[start_idx:end_idx] == subjects[start_idx]) and 
+                np.all(runs[start_idx:end_idx] == runs[start_idx]) and
+                np.all(pages[start_idx:end_idx] == pages[start_idx])):
                     valid_indices.append(start_idx)
         print(f"Total valid windows: {len(valid_indices)}")
         return valid_indices
@@ -240,7 +245,7 @@ def add_autoclip_gradient_handler(model, clip_percentile, multi_gpu):
         
 
 
-file_path = "./train.csv"
+file_path = "./train_balanced_new_strategy.csv"
 if not os.path.exists(file_path):
     print(f"Error: Data file not found at {file_path}")
 
@@ -272,19 +277,19 @@ multi_gpu = num_gpus > 1
 
 # hard coding input size because cols are dropped in dataset instantiation so
 # input size 12 with saccade data, 6 without, 31 with one hot cols
-input_size = 7 # num features per timestep
+input_size = 6 # num features per timestep
 hidden_size = 256
 num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 num_epochs = 25 
 lr = .001
-sequence_length = 2000 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
+sequence_length = 2500 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
 # might have been suffering from vanishing gradient with 4k and 8k
 step_size = 250
-batch_size = 128
-columns_to_scale = ["LX", "LY", "RX", "RY"]# - for no sccades
-#columns_to_scale = ["LX", "LY", "RX", "RY", "ampDeg_L", "ampDeg_R", "vPeak_L", "vPeak_R"]
-dropout_percent = .35
+batch_size = 64
+columns_to_scale = ["LX", "LY", "RX", "RY", "LPupil_normalized", "RPupil_normalized"]# - for no sccades
+#columns_to_scale = ["LX", "LY", "RX", "RY", "ampDeg_L", "ampDeg_R", "vPeak_L", "vPeak_R", "LPupil_normalized", "RPupil_normalized"]
+dropout_percent = 0
 
 
 # prepare data
@@ -293,14 +298,14 @@ train_scaled[columns_to_scale] = train_scaled[columns_to_scale].astype("float64"
 scaler = StandardScaler()
 # fit transform train
 train_scaled.loc[:,columns_to_scale] = scaler.fit_transform(train_scaled[columns_to_scale])
-
+"""
 # scale tSample_norm- min max within run because trials are independent/ different lengths
 # will need to be done separately on test set because those trials are also independent/ different lengths
 time_scaler = MinMaxScaler()
 
 train_scaled["tSample_normalized"] = train_scaled.groupby(["Subject", "run_num"])["tSample_normalized"].transform(
     lambda x: time_scaler.fit_transform(x.values.reshape(-1,1)).flatten())
-
+"""
 # verify that runs start at 0 and end at 1
 """
 print("verifying scaling time worked correctly...")
@@ -322,15 +327,27 @@ model = LSTMModel(input_size, hidden_size, num_layers, output_size, dropout_perc
 # use dataparallel if multi gpu
 if multi_gpu:
     model = torch.nn.DataParallel(model)
-    
+
 #pos_weight = torch.tensor([294780851/2830876]).to(device) 
 # pos weight is ratio of not MW/ MW to give more weight to pos class - get from original df
 mw_count = (train_data["is_MW"] == 1).sum()
 not_mw_count = (train_data["is_MW"] == 0).sum()
 
-pos_weight = torch.tensor([not_mw_count/mw_count]).to(device)
+if not_mw_count > mw_count:
+    print("not mw is majority class")
+    print(f"Pos weight value: not_mw_count/mw_count * 1.5: {not_mw_count/(mw_count * 1.5)}")
+    pos_weight = torch.tensor([not_mw_count/(mw_count*1.5)]).to(device)
+elif mw_count > not_mw_count:
+    print("mw is majority class")
+    print(f"Pos weight value: mw_count/not_mw_count: {mw_count/not_mw_count}")
+    pos_weight = torch.tensor([mw_count/not_mw_count]).to(device)
+elif mw_count == not_mw_count:
+    print("classes are balanced, using 1 as pos weight")
+    pos_weight = torch.tensor([1]).to(device)
+
 
 criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+#criterion = nn.BCEWithLogitsLoss()
 if multi_gpu:
     optimizer = optim.AdamW(model.module.parameters(), lr=lr) #.01 weight decay is default
 else:
@@ -343,6 +360,26 @@ train_losses = []
 clip_percentile = 95
 autoclip_gradient = add_autoclip_gradient_handler(model, clip_percentile, multi_gpu)
 
+# calculating class imbalance to set alpha
+# calculate based on full set rather than batches
+train_mw_count = (train_data["is_MW"] == 1).sum()
+train_non_mw_count = (train_data["is_MW"] == 0).sum()
+
+    
+print(f"Training Set Ratio (MW/Non-MW): {train_mw_count / train_non_mw_count:.2f}")
+print(f"MW: {train_mw_count}")
+print(f"Not MW: {train_non_mw_count}")
+"""
+p_mw = train_mw_count / (train_mw_count + train_non_mw_count)
+majority_weight = 1-p_mw
+# use values for alpha dynamically based on class imbalance- apply multipliers to decay this value for testing
+
+alpha = majority_weight
+gamma = 2
+
+print(f"alpha: {alpha}")
+print(f"gamma: {gamma}")
+"""
 #train
 # start timer
 start_time = time.time()
