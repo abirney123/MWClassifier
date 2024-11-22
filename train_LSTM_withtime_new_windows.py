@@ -1,10 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon Nov 18 15:38:22 2024
-using pos weight and no weighted random sampler
-contains new dataset class that ensures windows only contain a single subject and run
-currently set to use train_balanced_no_empty_runs
-currently not dropping keep in dataset
+use commented out dataloader if you don't want to use the stratified batching
 
 @author: abirn
 Gradient autoclipping adapted from: https://github.com/pseeth/autoclip/blob/master/autoclip.py
@@ -13,7 +10,7 @@ Gradient autoclipping adapted from: https://github.com/pseeth/autoclip/blob/mast
 
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from sklearn.model_selection import train_test_split, LeaveOneGroupOut
 import torch.nn as nn
 import torch.optim as optim
@@ -47,6 +44,53 @@ def load_data(file_path, chunksize = 500000):
         dfSamples.drop(labels=["Unnamed: 0"], axis=1, inplace=True)
     return dfSamples
 
+def group_sequences(dataset):
+    # group sequence indices by their majority class
+    # accepts dataset
+    # returns grouped_indices, a dictionary with two keys (one for each class)
+    # and values as lists of indices for the sequences whos majority class matches the key
+    grouped_indices = {}
+    for i in range(len(dataset)):
+        _, labels, _, _,_ = dataset[i] # dataset returns features, labels, subject, timestep, run
+        seq_label = int(labels.mean() > .5) # find the majority class for the sequence w .5 threshold
+        # if this label isnt already a key in the dict, initialize the key with a list as value
+        if seq_label not in grouped_indices:
+            grouped_indices[seq_label] = [] 
+        # add this index to grouped indices under the seq label key
+        grouped_indices[seq_label].append(i)
+    return grouped_indices
+
+def stratify_batches(grouped_indices, batch_size):
+    # separate the lists of sequence indices from the keys of grouped_indices
+    mw_idxs = grouped_indices[1]
+    not_mw_idxs = grouped_indices[0]
+    
+    # find which group is smaller to balance batches
+    min_group_size = min(len(not_mw_idxs), len(mw_idxs))
+    # get half batch size (this will be num samples per class per batch)
+    half_batch = batch_size // 2
+    
+    # create batches
+    batches = []
+    for i in range(0, min_group_size, half_batch):
+        # create this batch- half not mw sequences, half mw sequences
+        batch = not_mw_idxs[i:i+half_batch] + mw_idxs[i:i+half_batch]
+        # shuffle here if overfitting?
+        batches.append(batch)
+        
+    # skipping leftover sequences- they will all be from the majority class
+    return batches
+
+class StratifiedBatchSampler(Sampler):
+    def __init__(self, batches):
+        self.batches = batches
+        
+    def __iter__(self):
+        for batch in self.batches:
+            yield batch
+            
+    def __len__(self):
+        return len(self.batches)
 
 def add_padding(batch):
     # unpack inputs and labels
@@ -245,7 +289,7 @@ def add_autoclip_gradient_handler(model, clip_percentile, multi_gpu):
         
 
 
-file_path = "./train_balanced_new_strategy.csv"
+file_path = "./train_balanced_newstrat_10k.csv"
 if not os.path.exists(file_path):
     print(f"Error: Data file not found at {file_path}")
 
@@ -282,11 +326,11 @@ hidden_size = 256
 num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 num_epochs = 25 
-lr = .001
-sequence_length = 2500 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
+lr = .0001
+sequence_length = 4000 # trying smaller even though i think we need at least 4k to capture temporal context in LSTM memory
 # might have been suffering from vanishing gradient with 4k and 8k
 step_size = 250
-batch_size = 64
+batch_size = 128
 columns_to_scale = ["LX", "LY", "RX", "RY", "LPupil_normalized", "RPupil_normalized"]# - for no sccades
 #columns_to_scale = ["LX", "LY", "RX", "RY", "ampDeg_L", "ampDeg_R", "vPeak_L", "vPeak_R", "LPupil_normalized", "RPupil_normalized"]
 dropout_percent = 0
@@ -319,8 +363,14 @@ for subject in train_scaled["Subject"].unique():
 # prepare dataset
 train_dataset = WindowedTimeSeriesDataset(train_scaled, sequence_length, step_size)
     
+# get grouped indices
+grouped_indices = group_sequences(train_dataset)
+# create stratified batches
+stratified_batches = stratify_batches(grouped_indices, batch_size)
    # set up dataloader
-trainloader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, collate_fn = add_padding)
+#trainloader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, collate_fn = add_padding)
+# set up dataloader with stratified batching
+trainloader = DataLoader(train_dataset, batch_sampler = StratifiedBatchSampler(stratified_batches), shuffle=False,collate_fn=add_padding)
 
 # initialize model, optimizer, loss fntn
 model = LSTMModel(input_size, hidden_size, num_layers, output_size, dropout_percent).to(device)
@@ -335,8 +385,8 @@ not_mw_count = (train_data["is_MW"] == 0).sum()
 
 if not_mw_count > mw_count:
     print("not mw is majority class")
-    print(f"Pos weight value: not_mw_count/mw_count * 1.5: {not_mw_count/(mw_count * 1.5)}")
-    pos_weight = torch.tensor([not_mw_count/(mw_count*1.5)]).to(device)
+    print(f"Pos weight value: not_mw_count/mw_count: {not_mw_count/(mw_count)}")
+    pos_weight = torch.tensor([not_mw_count/(mw_count)]).to(device)
 elif mw_count > not_mw_count:
     print("mw is majority class")
     print(f"Pos weight value: mw_count/not_mw_count: {mw_count/not_mw_count}")
@@ -348,6 +398,7 @@ elif mw_count == not_mw_count:
 
 criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 #criterion = nn.BCEWithLogitsLoss()
+
 if multi_gpu:
     optimizer = optim.AdamW(model.module.parameters(), lr=lr) #.01 weight decay is default
 else:

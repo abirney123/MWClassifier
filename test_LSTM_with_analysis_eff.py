@@ -35,10 +35,10 @@ input_size = 6
 hidden_size = 256 
 num_layers = 2 # more than 3 isn't usually valuable
 output_size = 1 # how many values to predict for each timestep
-dropout_percent = .35
+dropout_percent = 0
 batch_size = 128
 step_size = 250
-sequence_length = 2000
+sequence_length = 2500
 
 # functions
 class LSTMModel(torch.nn.Module):
@@ -420,7 +420,7 @@ def plot_err_over_time(results, subject):
     fig.suptitle(f"Errors Over Time: Subject {subject}")
     plt.tight_layout(rect=[0,0,1,.9])
     #plt.legend(loc="upper right")
-    plt.savefig(f"./Plots/Errors_over_time_s{subject}_11-21_2.png")
+    plt.savefig(f"./Plots/Errors_over_time_s{subject}_11-22_strat1.png")
     plt.close()
 
 
@@ -432,7 +432,7 @@ test_data = load_data(file_path)
 
 # initialize scaler
 
-scaler = joblib.load("./Models/Scaler_2024-11-21_14-14-59.pk1")
+scaler = joblib.load("./Models/Scaler_2024-11-22_15-51-30.pk1")
 # Load saved model 
 print(torch.__version__)            # Check PyTorch version
 print(torch.cuda.is_available())    # Check if PyTorch detects CUDA
@@ -442,7 +442,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device: ", device)
 
 # replace cv0 in path with str corresponding to cv run
-model_path = "./Models/LSTM_2024-11-21_14-14-59.pth"
+model_path = "./Models/LSTM_2024-11-22_15-51-30.pth"
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 model.load_state_dict(torch.load(model_path))
 print("model loaded")
@@ -607,7 +607,7 @@ plt.ylabel("True Value")
 # replace fold number with fold number for model being evaluated/ best model
 plt.title("Confusion Matrix")
 
-plt.savefig(f"./Plots/LSTM_confmatrix_11-21_2.png")
+plt.savefig(f"./Plots/LSTM_confmatrix_11-22_strat1.png")
 
 precision = precision_score(flat_labs, flat_classifications)
 recall = recall_score(flat_labs, flat_classifications)
