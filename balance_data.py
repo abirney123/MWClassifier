@@ -169,10 +169,10 @@ def select_mw(dfSamples, buffer=4000):
         
 
 # import data
-train = load_data("./train_with_saccade.csv")
+train = load_data("./train.csv")
 
 #mw_over_time(train, cleaned=False)
-buffer = 17000
+buffer = 10000
 cleaned_df = select_mw(train, buffer)
 
 # check new distribution
@@ -186,10 +186,10 @@ print(f"length after cleaning: {len(cleaned_df)}")
 print("Cleaned Columns")
 print(cleaned_df.columns)
 # plot
-#mw_over_time(cleaned_df, cleaned=True)
+mw_over_time(cleaned_df, cleaned=True)
 
 
-cleaned_df.to_csv("./train_with_saccade_balanced.csv", index=False)
+cleaned_df.to_csv("./train_balanced_newstrat_10k.csv", index=False)
 
 # OLD STRATEGY
 """
