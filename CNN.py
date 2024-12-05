@@ -10,14 +10,39 @@ import torch.optim as optim
 from torchmetrics import F1Score, AUROC
 import torch.nn.functional as F
 from torch.optim import Adam,AdamW
+from torchvision.ops import sigmoid_focal_loss
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split, LeaveOneGroupOut
 import torch
 from torchmetrics.classification import BinaryAccuracy, BinaryAUROC, BinaryPrecisionRecallCurve, BinaryConfusionMatrix, BinaryF1Score, BinaryMatthewsCorrCoef, BinaryPrecision, BinaryRecall
 from collections import defaultdict, Counter
 import json
+import matplotlib.pyplot as pl
 
 
+def splitting_data_old(df : pd.DataFrame):
+    subjects = df["Subject"].value_counts().index
+    train_data = df[df["Subject"].isin(subjects[:8])]
+    test_data = df[df["Subject"].isin(subjects[8:])]
+    print(len(train_data["Subject"].value_counts().index))
+    print(len(test_data["Subject"].value_counts().index))
+
+    return train_data,test_data
+
+def splitting_data(df : pd.DataFrame):
+    # written by Alaina Birney, adapted by Omar Awajan
+    print(f"Splitting Data and stratifying against mw_bin label")
+    sub_df = df.groupby(["Subject"])["is_MW"].mean().reset_index()
+    print(sub_df)
+    sub_df.columns = ["Subject","proportion_mw"]
+    sub_df["mw_bin"] = pd.cut(sub_df["proportion_mw"],bins=3,labels=['low','medium','high'])
+    train_pairs, test_pairs = train_test_split(sub_df, test_size = 0.5, random_state=0, stratify=sub_df["mw_bin"])
+
+    train_data = pd.merge(df,train_pairs,on=["Subject"])
+    test_data = pd.merge(df,test_pairs,on=["Subject"])
+    train_data = train_data.drop(columns=["proportion_mw","mw_bin"])
+    test_data = test_data.drop(columns=["proportion_mw","mw_bin"])
+    return train_data,test_data
 
 def class_counts(dataset: torch.utils.data.Dataset) -> dict:
     labels = defaultdict(int)
@@ -52,73 +77,21 @@ def combine_records(df :pd.DataFrame) ->pd.DataFrame:
  
 # this is how I changed it. Sure thing let me just grab my headphones
 
+# this function extracts features on the window level
 def get_label(df :pd.DataFrame) -> int:
     counts = df['is_MW'].value_counts()
     if (len(counts.keys()) == 1):
         return counts.keys()[0]
+    
     ratio = counts.iloc[1]/counts.iloc[0]
     if (ratio > 0.50) & (counts.keys()[0] == 1):
         return 1
     return 0
 
+
 def sliding_window(df: pd.DataFrame, window_size: int = 2500, step_size: int = 250):
     start = 0
-    # Forward propagation to fill NaN values
-    df = df.ffill()
-    num_columns = df.shape[1] - 1
-    windows: list[pd.DataFrame] = []
-    labels: list[int] = []
-    mw_count: int = 0
-    f_count: int = 0
-    while start < len(df):
-        end = start + window_size
-        window = df.iloc[start:end]
-        label = get_label(window)
-        if label == 1:
-            mw_count += 1
-        else:
-            f_count += 1
-        labels.append(label)
-        window = window.drop(columns=['is_MW'])
-        
-        # Padding
-        if len(window) < window_size:
-            padding = pd.DataFrame(np.zeros((window_size - len(window), num_columns)))
-            padding.columns = window.columns
-            window = pd.concat([window, padding], ignore_index=True, axis=0)
-            windows.append(window)
-            break
-        
-        windows.append(window)
-        start += step_size
-    print(f"Original mw_count: {mw_count} - f_count: {f_count}")
-    majority_class_label = 0 if f_count > mw_count else 1
-    majority_class_count = max(mw_count, f_count)
-    minority_class_count = min(mw_count, f_count)
-    drop_count = majority_class_count - minority_class_count
-    kept_windows = []
-    kept_labels = []
-    dropped = 0
-    for i, label in enumerate(labels):
-        if label == majority_class_label and dropped < drop_count:
-            dropped += 1
-        else:
-            kept_windows.append(windows[i])
-            kept_labels.append(label)
-    print(f"Dropped {dropped} instances from the majority class")
-    final_windows: list[torch.Tensor] = []
-    for window in kept_windows:
-        window = window.values.flatten().reshape(1, window_size * num_columns)
-        window = tensor(window, dtype=torch.float32)
-        final_windows.append(window)
-    
-    final_labels = tensor(kept_labels, dtype=torch.int)
-    return final_windows, final_labels
-
-def sliding_window_1(df :pd.DataFrame, window_size :int=2500, step_size :int=250):
-    start = 0
-    # forward propagation to fill NaN values
-    df = df.ffill()
+    #df = df.ffill()
     num_columns = df.shape[1]-1
     windows :list[pd.DataFrame]= []
     labels :list[int]= []
@@ -128,85 +101,84 @@ def sliding_window_1(df :pd.DataFrame, window_size :int=2500, step_size :int=250
         end = start + window_size
         window = df.iloc[start:end]
         label = get_label(window)
-        if label == 1:
-            mw_count += 1
-        else:
-            f_count += 1
-        labels.append(label)
-        window= window.drop(columns=['is_MW'])
-        if len(window) < window_size:
-            padding = pd.DataFrame(np.zeros((window_size - len(window), num_columns)))
-            padding.columns = window.columns
-            window = pd.concat([window, padding], ignore_index=True,axis=0)
-            windows.append(window)
-            break
-        
-        windows.append(window)
-        start += step_size
-    print(f"mw_count {mw_count} - f_count {f_count}")
-    dif = f_count - mw_count
-    index :int = 0
-    c :int = 0
-    while dif >= 0:
-        if index >= len(labels):
-            index = 0
-        if labels[index] == 1:
-            sequence = windows[index]
-            label = labels[index]
-            windows.append(sequence)
+        if True:
+            if label == 1:
+                mw_count += 1
+            else:
+                f_count += 1
             labels.append(label)
-        index += 1
-        dif -= 1
-        c += 2
-    print(f"duplications {c}")
-    final_windows :list[torch.Tensor] = []
-    for window in windows:
-        window = window.values.flatten().reshape(1,window_size*num_columns)
-        window = tensor(window,dtype=torch.float32)
-        final_windows.append(window)
-    
-    labels = tensor(labels, dtype=torch.int)
-    final_windows = final_windows
+            window= window.drop(columns=['is_MW'])
+            if len(window) < window_size:
+                padding = pd.DataFrame(np.zeros((window_size - len(window), num_columns)))
+                padding.columns = window.columns
+                window = pd.concat([window, padding], ignore_index=True,axis=0)
+                windows.append(window)
+                break
+        
+            windows.append(window)
+            start += step_size
+    i :int = 0
+    print("Balance Data....")
+    while (f_count > mw_count) and (i in range(len(labels))):
+        if labels[i] == 0:
+            labels.pop(i)
+            windows.pop(i)
+            i += 1
+            f_count -= 1
+            
+    return windows,labels
 
-    return final_windows,labels
 
-
-def sliding_window_2(df :pd.DataFrame, window_size :int=2500, step_size :int=250):
+# use full dataset
+def sliding_window_old(df :pd.DataFrame, window_size :int=2500, step_size :int=250):
     start = 0
     df = df.ffill()
     num_columns = df.shape[1]-1
     windows :list[pd.DataFrame]= []
     labels :list[int]= []
-    mw_count :int = 0
-    f_count :int = 0
     while start < len(df):
         end = start + window_size
         window = df.iloc[start:end]
         label = get_label(window)
-        if label == 1:
-            mw_count += 1
-        else:
-            f_count += 1
-        labels.append(label)
-        window= window.drop(columns=['is_MW'])
-        if len(window) < window_size:
-            padding = pd.DataFrame(np.zeros((window_size - len(window), num_columns)))
-            padding.columns = window.columns
-            window = pd.concat([window, padding], ignore_index=True,axis=0)
-            windows.append(window)
-            break
+        if True:
+            labels.append(label)
+            window= window.drop(columns=['is_MW'])
+            if len(window) < window_size:
+                padding = pd.DataFrame(np.zeros((window_size - len(window), num_columns)))
+                padding.columns = window.columns
+                window = pd.concat([window, padding], ignore_index=True,axis=0)
+                windows.append(window)
+                break
         
-        windows.append(window)
-        start += step_size
-    
-    final_windows :list[torch.tensor] = []
-    for window in windows:
-        window = window.values.flatten().reshape(1,window_size*num_columns)
-        window = tensor(window,dtype=torch.float32)
-        final_windows.append(window)
-    final_labels = tensor(labels, dtype=torch.int)
+            windows.append(window)
+            start += step_size
 
-    return final_windows,labels
+    return windows,labels
+
+def sliding_windows_stager(df :pd.DataFrame, window_size :int=2500, step_size :int=250):
+    # group by subject ID and run_num
+    # send each unique ( SubjectID + run_num ) combo to sliding window function
+    # take the list of windows + labels and concat them to a final list
+    final_windows :list[pd.DataFrame] = []
+    final_labels :list[int] = []
+    subjects_split = df["Subject"].value_counts().index
+    for subject in subjects_split:
+        print(f"Getting {subject} Data")
+        runs = df[df["Subject"] == subject]["run_num"].value_counts().index
+        for run in runs:
+            if (df[ (df["Subject"] == subject) & (df["run_num"] == run) ]['is_MW'] == 1).any():
+                pages = df[ (df["Subject"] == subject) & (df["run_num"] == run) ]["page_num"].value_counts().index
+                for page in pages:
+                    temp_df = df[ (df["Subject"] == subject) & (df["run_num"] == run) & (df["page_num"] == page)]
+                    if (temp_df['is_MW'] == 1).any():
+                        print(f"Getting {page} Data")
+                        temp_df = temp_df.drop(columns=["Subject", "run_num", "page_num"])
+                        windows, labels = sliding_window(temp_df, window_size=2500, step_size=250)
+                        for i in range(len(windows)):
+                            final_windows.append(windows[i])
+                            final_labels.append(labels[i])
+    final_windows, final_labels =to_torch(final_windows,final_labels)
+    return final_windows,final_labels
 
 
 def duplicate(dataset :torch.utils.data.Dataset) -> torch.utils.data.Dataset:
@@ -228,6 +200,92 @@ def duplicate(dataset :torch.utils.data.Dataset) -> torch.utils.data.Dataset:
     new_labels = torch.tensor(new_labels)
     return MWDataSet(features=new_features, labels=new_labels)
 
+
+def to_torch(windows :list[pd.DataFrame], labels :list[int], window_size :int=2500):
+    #num_columns = windows[0].shape[1]-1
+    print(windows[0].columns)
+    dim = window_size*6
+    final_windows :list[torch.tensor] = []
+    for window in windows:
+        window = window.values.flatten().reshape(1,dim)
+        final_windows.append(tensor(window,dtype=torch.float32))
+    final_labels = tensor(labels, dtype=torch.int)
+
+    return final_windows, final_labels
+'''
+    ['Unnamed: 0', 'tSample', 'LX', 'LY', 'LPupil', 'RX', 'RY', 'RPupil',
+       'page_num', 'run_num', 'is_MW', 'sample_id', 'Subject',
+       'tSample_normalized']
+'''
+def data_loader_old(filepath :str, window_size :int):
+
+    # Load dataset and drop irrelevant columns
+    print(f"Reading the dataset")
+    df :pd.DataFrame = pd.read_csv(filepath)
+    df = df.drop(columns=['Unnamed: 0', 'page_num', 'tSample', 'sample_id','tSample_normalized','run_num']) # 'run_num',
+    print(df.columns)
+    #split DataSet by Subject
+    #trainSubjects, testSubjects = lstm_VC.split_data(df)
+
+    train_data, test_data = splitting_data(df)
+    train_data.drop(columns=['Subject'],inplace=True)
+    test_data.drop(columns=['Subject'], inplace=True)
+    print(train_data.shape)
+    print(test_data.shape)
+    training_windows, training_labels = sliding_window(train_data,window_size=window_size)
+    testing_windows, testing_labels = sliding_window(test_data,window_size=window_size)
+
+    count = np.bincount(training_labels)
+    print(count)
+    weights = 1.0 / torch.tensor(count,dtype=torch.float)
+    print(weights)
+    sample_weights  = weights[training_labels]
+    print(sample_weights)
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+    train_dataset = MWDataSet(training_windows, training_labels)
+    test_dataset = MWDataSet(testing_windows, testing_labels)
+ 
+    train_dataloader = DataLoader(train_dataset, batch_size=32, sampler=sampler)
+    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+    return train_dataloader, test_dataloader
+
+
+def data_loader(filepath :str, window_size :int):
+    training_windows = []
+    training_labels = []
+    testing_windows = []
+    testing_labels = []
+    # Load dataset and drop irrelevant columns
+    print(f"Reading the dataset")
+    df :pd.DataFrame = pd.read_csv(filepath)
+    df = df.drop(columns=['Unnamed: 0','tSample',  'sample_id','tSample_normalized']) #  'Unnamed: 0','run_num', 'page_num',
+    print(df.columns)
+
+    train_data, test_data = splitting_data(df)
+    print(train_data.shape)
+    print(test_data.shape)
+    training_windows, training_labels = sliding_windows_stager(train_data,window_size=window_size)
+    testing_windows, testing_labels = sliding_windows_stager(test_data,window_size=window_size)
+
+    count = np.bincount(training_labels)
+    print(count)
+    weights = 1.0 / torch.tensor(count,dtype=torch.float)
+    print(weights)
+    sample_weights  = weights[training_labels]
+    print(sample_weights)
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+    train_dataset = MWDataSet(training_windows, training_labels)
+    test_dataset = MWDataSet(testing_windows, testing_labels)
+ 
+    train_dataloader = DataLoader(train_dataset, batch_size=32, sampler=sampler)
+    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+    return train_dataloader, test_dataloader
+
+
+
 class MWDataSet(Dataset):
     def __init__(self, features, labels):
         self.features = features
@@ -239,14 +297,14 @@ class MWDataSet(Dataset):
     def __getitem__(self, idx):
         return self.features[idx], self.labels[idx]
 
-
+# CNN
 class CNNModel(nn.Module):
     def __init__(self, size=17500):
         super(CNNModel, self).__init__()
 
         # First 1D Convolution layer
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=6, padding=0, stride=6)
-        conv1_out_size = ((size - 6) // 6) + 1
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=7, padding=0, stride=7)
+        conv1_out_size = ((size - 7) // 7) + 1
         
         # Second 1D Convolutional layer
         # self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=5, padding=0, stride=2)
@@ -255,7 +313,6 @@ class CNNModel(nn.Module):
         # Third 1D Convolutional layer
         #self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=0, stride=2)
         #conv3_out_size = ((conv2_out_size - 3) // 2) + 1
-
         # Fully connected layers
         self.fc1 = nn.Linear(32 * conv1_out_size,512)
         self.fc2 = nn.Linear(512, 512)
@@ -263,120 +320,255 @@ class CNNModel(nn.Module):
         self.fc4 = nn.Linear(512, 128)
         self.fc5 = nn.Linear(128, 1)  # Output layer
 
+        self.Gelu = nn.GELU()
+
     def forward(self, x):
         out = self.conv1(x)
-        out = F.relu(out)
-        #out = self.conv2(out)
-        #out = F.relu(out)
+        out = self.Gelu(out)
         
         out = out.view(out.size(0), -1)  # Flatten the tensor
         
         # Forward pass through fully connected layers
         out = self.fc1(out)
-        out = F.relu(out)
+        out =self.Gelu(out)
         out = self.fc2(out)
-        out = F.relu(out)
+        out = self.Gelu(out)
         out = self.fc3(out)
-        out = F.relu(out)
+        out = self.Gelu(out)
         out = self.fc4(out)
-        out = F.relu(out)
+        out = self.Gelu(out)
         out = self.fc5(out)
 
         return out
 
+
+#  Windows are Fully Flattened -> LSTM processes each timestep individually with Gelu
+class CNN_LSTM_1_Model(nn.Module):
+    def __init__(self, size=17500):
+        super(CNN_LSTM_1_Model, self).__init__()
+
+        # First 1D Convolution layer
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=7, padding=0, stride=7)
+        conv1_out_size = ((size - 7) // 7) + 1
+
+        # Basic LSTM Layer
+        self.lstm = nn.LSTM(
+            input_size=32,  # Matches the out_channels of the 1D-Conv which is per timestep
+            hidden_size=128,
+            num_layers=2,
+            batch_first=True
+        )
+
+        # Fully connected layers
+        self.fc1 = nn.Linear(128,512) # output is the size of the fully connected layers from the LSTM
+        self.fc2 = nn.Linear(512, 512)
+        self.fc3 = nn.Linear(512, 512)
+        self.fc4 = nn.Linear(512, 128)
+        self.fc5 = nn.Linear(128, 1)  # Output layer
+
+        self.Gelu = nn.GELU()
+
+    def forward(self, x):
+        # 1D-conv step
+        out = self.conv1(x)
+        print("After Conv1:", out.shape)  # Debug shape
+        out = self.Gelu(out)
+    
+        # Prepare for LSTM
+        out = out.permute(0, 2, 1)
+        print("After Permute:", out.shape)  # Debug shape
+    
+        # LSTM
+        out, _ = self.lstm(out)
+        print("After LSTM:", out.shape)  # Debug shape
+        out = out[:, -1, :]  # Last hidden state
+    
+        # Fully connected layers
+        out = self.fc1(out)
+        out = self.Gelu(out)
+        out = self.fc2(out)
+        out = self.Gelu(out)
+        out = self.fc3(out)
+        out = self.Gelu(out)
+        out = self.fc4(out)
+        out = self.Gelu(out)
+        out = self.fc5(out)
+        print("Output Shape:", out.shape)  # Debug shape
+
+        return out
+        
 '''
-    ['Unnamed: 0', 'tSample', 'LX', 'LY', 'LPupil', 'RX', 'RY', 'RPupil',
-       'page_num', 'run_num', 'is_MW', 'sample_id', 'Subject',
-       'tSample_normalized']
+Windows are Fully Flattened -> LSTM processes each timestep individually
+each timestep is labeled
+LSTM model is bidirectional
+
+1. full window flattened
+2. each timestep feature map is produced from the 1D-conv 1x6 to 32 outputchannel
+3. each 32 is sent to the LSTM model with its corresponding label
 '''
-def data_loader_1(filepath :str, window_size :int):
+class CNN_Bidirectional_LSTM_Model(nn.Module):
+    def __init__(self, size=17500, output_dim=1):
+        super(CNN_Bidirectional_LSTM_Model, self).__init__()
 
-    # Load dataset and drop irrelevant columns
-    print(f"Reading the dataset")
-    df :pd.DataFrame = pd.read_csv(filepath)
-    df = df.drop(columns=['Unnamed: 0', 'page_num', 'tSample', 'sample_id','tSample_normalized','run_num']) # 'run_num',
-    print(df.columns)
-    #split DataSet by Subject
-    #trainSubjects, testSubjects = lstm_VC.split_data(df)
+        # First 1D Convolution layer
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=7, padding=0, stride=7)
+        conv1_out_size = ((size - 7) // 7) + 1
+
+        # Bidirectional LSTM Layer
+        self.lstm = nn.LSTM(
+            input_size=32,        # Matches the out_channels of the 1D-Conv
+            hidden_size=128,      # Hidden size per direction
+            num_layers=2,         # Number of LSTM layers
+            batch_first=True,
+            bidirectional=True    # Makes the LSTM bidirectional
+        )
+
+        # Fully connected layer to output a label for each timestep
+        self.fc = nn.Linear(128 * 2, output_dim)  # Multiply by 2 for bidirectional hidden size
+
+        self.Gelu = nn.GELU()
+
+    def forward(self, x):
+        # Pass through convolutional layer
+        out = self.conv1(x)  # Shape: (batch_size, 32, conv1_out_size)
+        out = self.Gelu(out)
+
+        # Prepare for LSTM: (batch_size, seq_len, input_size)
+        out = out.permute(0, 2, 1)  # Shape: (batch_size, seq_len, 32)
+
+        # Pass through Bidirectional LSTM
+        out, _ = self.lstm(out)  # Output: (batch_size, seq_len, hidden_size * 2)
+
+        # Pass through Fully Connected layer for timestep-wise output
+        out = self.fc(out)  # Shape: (batch_size, seq_len, output_dim)
+
+        return out
+
+
+
+#  Windows are Fully Flattened -> LSTM processes each timestep individually with Gelu
+class ConvLSTMModel(nn.Module):
+    def __init__(self, size=17500, output_dim=1):
+        super(ConvLSTMModel, self).__init__()
+
+        # First 1D Convolution layer
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=6, padding=0, stride=6)
+        conv1_out_size = ((size - 7) // 7) + 1
+        # Second 1D Convolutional layer
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=6, stride=6, padding=0)
+        conv2_out_size = ((conv1_out_size - 6) // 6) + 1
+        
+        # Third 1D Convolutional layer
+        #self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=0, stride=2)
+        #conv3_out_size = ((conv2_out_size - 3) // 2) + 1
+        # Fully connected layers
+          
+        # LSTM Model
+        self.lstm = nn.LSTM(
+            input_size=64,
+            hidden_size=128,
+            num_layers=5,
+            batch_first=True
+        )
+
+        # Fully connected layer to output a label for each timestep
+        self.fc1 = nn.Linear(128,512)
+        self.fc2 = nn.Linear(512, 512)
+        self.fc3 = nn.Linear(512, 512)
+        self.fc4 = nn.Linear(512, 128)
+        self.fc5 = nn.Linear(128, 1)  # Output layer
+
+        self.Gelu = nn.GELU()
+
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.Gelu(out)
+        
+        out = self.conv2(out)
+        out = self.Gelu(out)
+        out = out.permute(0, 2, 1)
     
-    subjectList :list[str] = df['Subject'].value_counts().keys()
-    totalSize = len(subjectList)
-    trainSize = int(0.8 * totalSize)
-    trainSubjects :pd.DataFrame = df[df['Subject'].isin(subjectList[:trainSize])]
-    testSubjects :pd.DataFrame = df[df['Subject'].isin(subjectList[trainSize:])]
-    trainSubjects.drop(columns=['Subject'],inplace=True)
-    testSubjects.drop(columns=['Subject'], inplace=True)
-    print(trainSubjects.shape)
-    print(testSubjects.shape)
-    training_windows, training_labels = sliding_window_2(trainSubjects,window_size=window_size)
-    testing_windows, testing_labels = sliding_window_2(testSubjects,window_size=window_size)
-
-    count = np.bincount(training_labels)
-    weights = 1.0 / torch.tensor(count,dtype=torch.float)
-    sample_weights  = weights[training_labels]
-    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-    
-    train_dataset = MWDataSet(training_windows, training_labels)
-    test_dataset = MWDataSet(testing_windows, testing_labels)
- 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, sampler=sampler)
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-    return train_dataloader, test_dataloader
-
-def data_loader_2(filepath :str,window_size :int):
-
-    # Load dataset and drop irrelevant columns
-    print(f"Reading the dataset")
-    df :pd.DataFrame = pd.read_csv(filepath)
-    df = df.drop(columns=['Unnamed: 0', 'page_num', 'tSample', 'sample_id','tSample_normalized','run_num']) # 'run_num',
-    print(df.columns)
-    #split DataSet by Subject
-    #trainSubjects, testSubjects = lstm_VC.split_data(df)
-    
-    subjectList :list[str] = df['Subject'].value_counts().keys()
-    totalSize = len(subjectList)
-    trainSize = int(0.8 * totalSize)
-    trainSubjects :pd.DataFrame = df[df['Subject'].isin(subjectList[:trainSize])]
-    testSubjects :pd.DataFrame = df[df['Subject'].isin(subjectList[trainSize:])]
-    trainSubjects.drop(columns=['Subject'],inplace=True)
-    testSubjects.drop(columns=['Subject'], inplace=True)
-    print(trainSubjects.shape)
-    print(testSubjects.shape)
-    training_windows, training_labels = sliding_window(trainSubjects, window_size=window_size)
-    testing_windows, testing_labels = sliding_window(testSubjects, window_size=window_size)
-
-    count = np.bincount(training_labels)
-    weights = 1.0 / torch.tensor(count,dtype=torch.float)
-    sample_weights  = weights[training_labels]
-    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-
-    
-    train_dataset = MWDataSet(training_windows, training_labels)
-    test_dataset = MWDataSet(testing_windows, testing_labels)
- 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, sampler=sampler,shuffle=False)
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-    return train_dataloader, test_dataloader 
+        # LSTM
+        out, _ = self.lstm(out)
+        out = out[:, -1, :]  # Last hidden state
 
 
-def data_loader(filepath :str):
 
-    # Load dataset and drop irrelevant columns
-    print(f"Reading the dataset")
-    df :pd.DataFrame = pd.read_csv(filepath)
-    df = df.drop(columns=['Unnamed: 0', 'page_num', 'tSample', 'sample_id','tSample_normalized','Subject','run_num'])
-    print(df.columns)    
-    trainSubjects, testSubjects = train_test_split(df, test_size=0.2, random_state=42,stratify=df['is_MW'] )
-    # Check resulting shapes
-    print(trainSubjects.shape)
-    print(testSubjects.shape)
-    # Process the training and testing data
-    training_windows, training_labels = sliding_window(trainSubjects)
-    testing_windows, testing_labels = sliding_window(testSubjects)
-    
-    return training_windows, training_labels, testing_windows, testing_labels
+        # Forward pass through fully connected layers
+        out = self.fc1(out)
+        out =self.Gelu(out)
+        out = self.fc2(out)
+        out = self.Gelu(out)
+        out = self.fc3(out)
+        out = self.Gelu(out)
+        out = self.fc4(out)
+        out = self.Gelu(out)
+        out = self.fc5(out)
+
+        return out
+
+
+class ConvLSTMModelWithAttention(nn.Module):
+    def __init__(self, size=17500, output_dim=1):
+        super(ConvLSTMModelWithAttention, self).__init__()
+
+        # Convolutional layers
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=6, stride=6, padding=0)
+        conv1_out_size = ((size - 6) // 6) + 1
+        #self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=6, stride=6, padding=0)
+        #conv2_out_size = ((conv1_out_size - 6) // 6) + 1
+
+        # LSTM
+        self.lstm = nn.LSTM(
+            input_size=32,
+            hidden_size=128,
+            num_layers=4,
+            batch_first=True
+        )
+
+        # Attention mechanism parameters
+        self.attention_weights = nn.Linear(128, 1, bias=False)
+
+        # Fully connected layers
+        self.fc1 = nn.Linear(128, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, 128)
+        self.fc4 = nn.Linear(128, output_dim)
+
+        self.Gelu = nn.GELU()
+
+    def forward(self, x):
+        # Convolutional layers
+        out = self.conv1(x)
+        out = self.Gelu(out)
+
+        #out = self.conv2(out)
+        #out = self.Gelu(out)
+
+        # Prepare for LSTM
+        out = out.permute(0, 2, 1)
+
+        # LSTM
+        lstm_out, _ = self.lstm(out)
+
+        # Attention mechanism
+        attention_scores = self.attention_weights(lstm_out)
+        attention_scores = torch.softmax(attention_scores, dim=1)
+
+        # Weighted sum of LSTM outputs
+        context_vector = torch.sum(attention_scores * lstm_out, dim=1)
+
+        # Fully connected layers
+        out = self.fc1(context_vector)
+        out = self.Gelu(out)
+        out = self.fc2(out)
+        out = self.Gelu(out)
+        out = self.fc3(out)
+        out = self.Gelu(out)
+        out = self.fc4(out)
+
+        return out
 
 
 def CNN() -> None:
@@ -385,9 +577,10 @@ def CNN() -> None:
     print(f"Using device: {hw_device}")
     results :dict = {}
    
-    for window_size in range(1000,4000,500):
+    if True:
+        window_size = 2500
         # Initialize model, loss, optimizer, and epochs
-        model = CNNModel(size=window_size*6)
+        model = ConvLSTMModelWithAttention(size=window_size*6)
         model.to(hw_device)
         criterion = nn.BCEWithLogitsLoss()
         optimizer = Adam(model.parameters())
@@ -403,15 +596,16 @@ def CNN() -> None:
         confusionmatrix = BinaryConfusionMatrix().to(hw_device)
         corr_coef = BinaryMatthewsCorrCoef().to(hw_device)
         log_losses = []
+        best_loss = float('inf')
+        patience = 5
+        patience_counter = 0
         roc_aucs = []
-        file_path = r"Z:\Mindless Reading\neuralnet_classifier\all_subjects_interpolated.csv"
-        # training_windows, training_labels, testing_windows, testing_labels = data_loader(file_path)
-        # train_dataset = MWDataSet(features=training_windows, labels=training_labels)
-        # test_dataset = MWDataSet(features=testing_windows, labels=testing_labels)
-        # train_loader = DataLoader(train_dataset, batch_size=batch, shuffle=False)
-        # test_loader = DataLoader(test_dataset, batch_size=batch, shuffle=False)
-        # train_loader, test_loader = data_loader_2(file_path,window_size=window_size)
-        train_loader, test_loader = data_loader_1(file_path,window_size=window_size)
+        file_path = r"D:\all_subjects_data_no_interpolation.csv"
+        # file_path = r"Z:\Mindless Reading\neuralnet_classifier\all_subjects_interpolated.csv"
+        # file_path = r"D:\train_balanced_newstrat_10k.csv"
+        #file_path = r"D:\all_subjects_interpolated.csv"
+        train_loader, test_loader = data_loader(file_path,window_size=window_size)
+
         # Training Loop
         for epoch in range(epochs):
             model.train()
@@ -423,9 +617,9 @@ def CNN() -> None:
 
                 optimizer.zero_grad()
                 outputs = model(inputs).view(-1)
-            
 
-                loss = criterion(outputs, labels.float())
+                # loss = criterion(outputs, labels.float())
+                loss = sigmoid_focal_loss(outputs, labels.float(), alpha=1, gamma=1.5, reduction='mean')
                 loss.backward()
                 optimizer.step()
 
@@ -434,7 +628,18 @@ def CNN() -> None:
             avg_loss = running_loss / len(train_loader)
             log_losses.append(avg_loss)
 
-            print(f"Epoch [{epoch + 1}/{epochs}], Loss: {avg_loss:.4f}")
+            print(f"Epoch [{epoch + 1}/{epochs}], Loss: {avg_loss:.6f}")
+            if avg_loss < best_loss:
+                print(f"Validation loss improved from {best_loss:.6f} to {avg_loss:.6f}. Saving model...")
+                best_loss = avg_loss
+                patience_counter = 0
+                torch.save(model.state_dict(), "best_model.pth")  # Save the best model
+            else:
+                patience_counter += 1
+                print(f"No improvement in validation loss. Patience counter: {patience_counter}/{patience}")
+                if patience_counter >= patience:
+                    print("Early stopping triggered.")
+                    break
 
         # Testing Loop
         # Initialize metric tracking lists
@@ -513,9 +718,6 @@ def CNN() -> None:
         "Test Correlation Coefficient":test_corrcoef,
         "Test Log Loss":loss
         }
-
-    with open("results.json", 'w') as json_file:
-        json.dump(results, json_file, indent=4)
     
     # Plotting the collected metrics over epochs/iterations
     plt.figure(figsize=(15, 8))
@@ -568,7 +770,7 @@ def CNN() -> None:
 
 def main()->None:
     CNN()
-    
+
 
 if __name__ == '__main__':
     main()
