@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sun Dec  1 18:29:47 2024
+Created on Wed Dec  4 12:29:29 2024
 
 @author: abirn
 """
+
 
 import pandas as pd
 import torch
@@ -29,9 +30,9 @@ hidden_size = 256
 num_layers = 2 # more than 3 isn't usually valuable
 output_size = 1 # how many values to predict for each timestep
 dropout_percent = 0
-batch_size = 64
+batch_size = 128
 step_size = 250
-sequence_length = 2500
+sequence_length = 8000
 cnn_input_size = sequence_length
 #lstm_input_size = 32 * (((cnn_input_size - 6) //6) +1) # num features per timestep
 lstm_input_size=64 # match output size for cnn
@@ -394,58 +395,35 @@ class CNNModel(nn.Module):
     def __init__(self, input_size=2500):
         super(CNNModel, self).__init__()
 
-        # First 1D Convolution layer
-        # 6 features, 6 in channels
-        self.conv1 = nn.Conv1d(in_channels=6, out_channels=32, kernel_size=6, padding=0, stride=6)
-        #conv1_out_size = ((input_size - 6) // 6) + 1
-        #self.feature_size = 32*conv1_out_size # adjust first num to match out channels if needed
-        
-        # Second 1D Convolutional layer
-        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=5, padding=0, stride=2)
-        #conv2_out_size = ((conv1_out_size - 5) // 2) + 1
-        #self.feature_size = 64*conv2_out_size # match out channels
-        #self.final_seq_len = conv2_out_size
-        
-        # Third 1D Convolutional layer
-        #self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=0, stride=2)
-        #conv3_out_size = ((conv2_out_size - 3) // 2) + 1
-
-        # Fully connected layers
-        # commented out as this will be used as feature extractor
-        #self.fc1 = nn.Linear(32 * conv1_out_size,512)
-        #self.fc2 = nn.Linear(512, 512)
-        #self.fc3 = nn.Linear(512, 512)
-        #self.fc4 = nn.Linear(512, 128)
-        #self.fc5 = nn.Linear(128, 1)  # Output layer
-
+        # build up receptive field that matches seq len/ input size
+        """
+        attempt at 8k
+        self.conv1 = nn.Conv1d(in_channels = 6, out_channels = 32, kernel_size = 15, stride=2, dilation =1)
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels = 64, kernel_size = 15, stride = 2, dilation=16)
+        """
+        self.conv1 = nn.Conv1d(in_channels = 6, out_channels = 32, kernel_size = 15, stride=2, dilation =1)
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels = 64, kernel_size = 15, stride = 2, dilation=275)
     def forward(self, x):
 
         out = self.conv1(x)
+        #print(f"After Conv1: {out.shape}")
         out = F.relu(out)
         out = self.conv2(out)
+        #print(f"After Conv2: {out.shape}")
         out = F.relu(out)
-        #out = self.conv3(out)
-        #out = F.relu(out)
-        
-        #out = out.view(out.size(0), -1)  # Flatten the tensor for LSTM input
-        
-        # Forward pass through fully connected layers
-        #out = self.fc1(out)
-        #out = F.relu(out)
-        #out = self.fc2(out)
-        #out = F.relu(out)
-        #out = self.fc3(out)
-        #out = F.relu(out)
-        #out = self.fc4(out)
-        #out = F.relu(out)
-        #out = self.fc5(out)
+
+
 
         return out
     
     def compute_seq_len(self, input_seq_len):
         seq_len = input_seq_len
-        for layer in [self.conv1, self.conv2]:
-            seq_len = (((seq_len - layer.kernel_size[0]) // layer.stride[0]) +1)
+        for layer in [self.conv1, self.conv2]:#, self.conv3, self.conv4,
+                      #self.conv5]:#, self.conv6, self.conv7]:
+            #seq_len = (((seq_len - layer.kernel_size[0]) // layer.stride[0]) +1)
+            # with dilations
+            effective_kernel = (layer.kernel_size[0] - 1) * layer.dilation[0] + 1
+            seq_len = ((seq_len - effective_kernel) // layer.stride[0]) + 1
         return seq_len
     
 
@@ -510,7 +488,7 @@ def plot_err_over_time(results, subject):
     fig.suptitle(f"Errors Over Time: Subject {subject}")
     plt.tight_layout(rect=[0,0,1,.9])
     #plt.legend(loc="upper right")
-    plt.savefig(f"./Plots/Errors_over_time_s{subject}_CNNLSTM_12-5_2.png")
+    plt.savefig(f"./Plots/Errors_over_time_s{subject}_CNNLSTM_12-4_12.png")
     plt.close()
 
 
@@ -522,7 +500,7 @@ test_data = load_data(file_path)
 
 # initialize scaler
 
-scaler = joblib.load("./Models/CNN-LSTM_Scaler_2024-12-05_19-19-59.pk1")
+scaler = joblib.load("./Models/CNN-LSTM_Scaler_2024-12-04_21-54-05.pk1")
 # Load saved model 
 print(torch.__version__)            # Check PyTorch version
 print(torch.cuda.is_available())    # Check if PyTorch detects CUDA
@@ -532,7 +510,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device: ", device)
 
 # replace cv0 in path with str corresponding to cv run
-model_path = "./Models/CNN-LSTM_2024-12-05_19-19-59.pth"
+model_path = "./Models/CNN-LSTM_2024-12-04_21-54-05.pth"
 model = CNNLSTM( cnn_input_size, lstm_input_size, hidden_size, num_layers,
                 output_size, dropout_percent).to(device)
 model.load_state_dict(torch.load(model_path))
@@ -703,7 +681,7 @@ plt.ylabel("True Value")
 # replace fold number with fold number for model being evaluated/ best model
 plt.title("Confusion Matrix")
 
-plt.savefig(f"./Plots/LSTM_confmatrix_CNNLSTM_12-5_2.png")
+plt.savefig(f"./Plots/LSTM_confmatrix_CNNLSTM_12-4_12.png")
 
 precision = precision_score(flat_labs, flat_classifications)
 recall = recall_score(flat_labs, flat_classifications)

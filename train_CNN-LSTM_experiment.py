@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Created on Wed Nov 20 18:12:48 2024
+Created on Wed Dec  4 08:16:33 2024
 
 @author: abirn
-
-https://medium.com/@mijanr/different-ways-to-combine-cnn-and-lstm-networks-for-time-series-classification-tasks-b03fc37e91b6 
-used as guide for combining architectures
 """
+
 
 import pandas as pd
 import torch
@@ -98,7 +96,7 @@ def stratify_batches(grouped_indices, batch_size):
         # create this batch- half not mw sequences, half mw sequences
         batch = not_mw_idxs[i:i+half_batch] + mw_idxs[i:i+half_batch]
         # shuffle 
-        random.shuffle(batch)
+        #random.shuffle(batch)
         batches.append(batch)
         
     # skipping leftover sequences- they will all be from the majority class
@@ -238,16 +236,20 @@ class LSTMModel(torch.nn.Module):
         # bidirectional lstm with batch as first dimension
         self.lstm = torch.nn.LSTM(input_size=input_size, hidden_size=hidden_size,
                                   num_layers=num_layers, batch_first=True,
-                                  bidirectional=True, dropout = dropout_p)
+                                  bidirectional=False, dropout = dropout_p)
         #self.layer_norm = nn.LayerNorm(hidden_size*2)
-        self.fc = torch.nn.Linear(hidden_size*2, hidden_size*2)
+        #self.fc = torch.nn.Linear(hidden_size*2, hidden_size*2)
+        self.fc = torch.nn.Linear(hidden_size, hidden_size)
         self.relu = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout_p)
-        self.fc2 = torch.nn.Linear(hidden_size*2, hidden_size*2)
+        #self.fc2 = torch.nn.Linear(hidden_size*2, hidden_size*2)
+        self.fc2 = torch.nn.Linear(hidden_size, hidden_size)
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout_p)
         # fc should be hidden size *2 because bidirectional - map hidden state to output size
-        self.fc3 = torch.nn.Linear(hidden_size*2, output_size)
+        #self.fc3 = torch.nn.Linear(hidden_size*2, output_size)
+        self.fc3 = torch.nn.Linear(hidden_size, output_size)
+        
     def forward(self,x, seq_lens):
         # x shape: (batch size, sequence length, number of features)
         # pack padded sequences - parameters (input, sequence lengths (must be on cpu), 
@@ -283,58 +285,68 @@ class CNNModel(nn.Module):
     def __init__(self, input_size=2500):
         super(CNNModel, self).__init__()
 
-        # First 1D Convolution layer
-        # 6 features, 6 in channels
-        self.conv1 = nn.Conv1d(in_channels=6, out_channels=32, kernel_size=6, padding=0, stride=6)
-        #conv1_out_size = ((input_size - 6) // 6) + 1
-        #self.feature_size = 32*conv1_out_size # adjust first num to match out channels if needed
+        # build up receptive field that matches seq len/ input size
+        """
+        12/4
+        self.conv1 = nn.Conv1d(in_channels=6, out_channels=32, kernel_size=15, padding=7, stride=2)
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=15, padding=7, stride=2)
+        self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=15, padding=7, stride=2)
+        self.conv4 = nn.Conv1d(in_channels=128, out_channels=256, kernel_size=15, padding=7, stride=2)
+        self.conv5 = nn.Conv1d(in_channels=256, out_channels=512, kernel_size=15, padding=7, stride=2)
+        self.conv6 = nn.Conv1d(in_channels=512, out_channels=512, kernel_size=15, padding=7, stride=2)
+        self.conv7 = nn.Conv1d(in_channels=512, out_channels=512, kernel_size=15, padding=7, stride=1)
+        """
         
-        # Second 1D Convolutional layer
-        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=5, padding=0, stride=2)
-        #conv2_out_size = ((conv1_out_size - 5) // 2) + 1
-        #self.feature_size = 64*conv2_out_size # match out channels
-        #self.final_seq_len = conv2_out_size
-        
-        # Third 1D Convolutional layer
-        #self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=0, stride=2)
-        #conv3_out_size = ((conv2_out_size - 3) // 2) + 1
-
-        # Fully connected layers
-        # commented out as this will be used as feature extractor
-        #self.fc1 = nn.Linear(32 * conv1_out_size,512)
-        #self.fc2 = nn.Linear(512, 512)
-        #self.fc3 = nn.Linear(512, 512)
-        #self.fc4 = nn.Linear(512, 128)
-        #self.fc5 = nn.Linear(128, 1)  # Output layer
-
+        """
+        12/4 (2)
+        self.conv1 = nn.Conv1d(in_channels = 6, out_channels = 64, kernel_size = 31, stride =2)
+        self.conv2 = nn.Conv1d(in_channels = 64, out_channels = 128, kernel_size = 15, stride =2)
+        self.conv3 = nn.Conv1d(in_channels = 128, out_channels = 256, kernel_size = 15, stride =2, dilation = 2)
+        self.conv4 = nn.Conv1d(in_channels = 256, out_channels = 512, kernel_size = 15, stride =2, dilation = 2)
+        self.conv5 = nn.Conv1d(in_channels = 512, out_channels = 512, kernel_size = 15, stride =2, dilation = 2)
+        """
+        """
+        self.conv1 = nn.Conv1d(in_channels = 6, out_channels = 128, kernel_size = 251, stride=2, dilation =1)
+        self.conv2 = nn.Conv1d(in_channels=128, out_channels = 256, kernel_size = 51, stride = 1, dilation=16)
+        """
+        self.conv1 = nn.Conv1d(in_channels = 6, out_channels = 32, kernel_size = 15, stride=2, dilation =1)
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels = 64, kernel_size = 15, stride = 2, dilation=275)
     def forward(self, x):
 
         out = self.conv1(x)
+        #print(f"After Conv1: {out.shape}")
         out = F.relu(out)
         out = self.conv2(out)
+        #print(f"After Conv2: {out.shape}")
         out = F.relu(out)
-        #out = self.conv3(out)
-        #out = F.relu(out)
-        
-        #out = out.view(out.size(0), -1)  # Flatten the tensor for LSTM input
-        
-        # Forward pass through fully connected layers
-        #out = self.fc1(out)
-        #out = F.relu(out)
-        #out = self.fc2(out)
-        #out = F.relu(out)
-        #out = self.fc3(out)
-        #out = F.relu(out)
-        #out = self.fc4(out)
-        #out = F.relu(out)
-        #out = self.fc5(out)
+        """
+        out = self.conv3(out)
+        #print(f"After Conv3: {out.shape}")
+        out = F.relu(out)
+        out = self.conv4(out)
+        #print(f"After Conv4: {out.shape}")
+        out = F.relu(out)
+        out = self.conv5(out)
+        #print(f"After Conv5: {out.shape}")
+        out = F.relu(out)
+
+        out = self.conv6(out)
+        out = F.relu(out)
+        out = self.conv7(out)
+        out = F.relu(out)
+        """
+
 
         return out
     
     def compute_seq_len(self, input_seq_len):
         seq_len = input_seq_len
-        for layer in [self.conv1, self.conv2]:
-            seq_len = (((seq_len - layer.kernel_size[0]) // layer.stride[0]) +1)
+        for layer in [self.conv1, self.conv2]:#, self.conv3, self.conv4,
+                      #self.conv5]:#, self.conv6, self.conv7]:
+            #seq_len = (((seq_len - layer.kernel_size[0]) // layer.stride[0]) +1)
+            # with dilations
+            effective_kernel = (layer.kernel_size[0] - 1) * layer.dilation[0] + 1
+            seq_len = ((seq_len - effective_kernel) // layer.stride[0]) + 1
         return seq_len
     
     
@@ -388,7 +400,9 @@ class CNNLSTM(nn.Module):
         x = x.permute(0,2,1)
         #print(f"X shape after permuting (CNN input): {x.shape}")
         #print("should be batch size, input size, seq len")
+
         out = self.cnn(x)
+
         out = out.permute(0,2,1)
         #print(f"shape for LSTM input: {out.shape}")
         #print("should be batch size, seq len, input size")
@@ -399,12 +413,13 @@ class CNNLSTM(nn.Module):
         if not self.seq_lens_printed:
             print("Seq lens fed to LSTM: ", torch.unique(new_seq_lens))
             self.seq_lens_printed= True
+
         out = self.lstm(out, new_seq_lens)
+
         
         return out
             
-#file_path = "./train_balanced_newstrat_6.6k.csv"
-file_path = "./train.csv"
+file_path = "./train_balanced_newstrat_6.6k.csv"
 if not os.path.exists(file_path):
     print(f"Error: Data file not found at {file_path}")
 
@@ -434,7 +449,7 @@ multi_gpu = num_gpus > 1
 
 #max_grad_norm = 1.0
 
-sequence_length = 2500
+sequence_length = 8000
 cnn_input_size = sequence_length
 lstm_input_size=64 # out channels
 # 32 out channels * ((input len - kernel size) / stride) +1
@@ -442,7 +457,7 @@ hidden_size = 256
 num_layers = 2 # more than 3 isn't usually valuable, starting with 1
 output_size = 1 # how many values to predict for each timestep
 num_epochs = 60
-lr = .00005
+lr = .001
 step_size = 250
 batch_size = 32
 columns_to_scale = ["LX", "LY", "RX", "RY", "LPupil_normalized", "RPupil_normalized"]# - for no sccades
@@ -485,30 +500,27 @@ grouped_indices = group_sequences(train_dataset)
 stratified_batches = stratify_batches(grouped_indices, batch_size)
 print("Number of batches generated:")
 print(len(stratified_batches))
-"""
    # set up dataloader
-trainloader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, collate_fn = add_padding)
+#trainloader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, collate_fn = add_padding)
 # set up dataloader with stratified batching
-#trainloader = DataLoader(train_dataset, batch_sampler = StratifiedBatchSampler(stratified_batches), shuffle=False,collate_fn=add_padding)
-
-
+trainloader = DataLoader(train_dataset, batch_sampler = StratifiedBatchSampler(stratified_batches), shuffle=False,collate_fn=add_padding)
+"""
 """
 # group shuffling - shuffle sequences to maintain temporal context while evening out batches
 num_groups = len(train_dataset)
 group_indices = list(range(num_groups))
 random.shuffle(group_indices)
 group_sampler = Subset(train_dataset, group_indices)
-
-
-trainloader = DataLoader(group_sampler, batch_size = batch_size, shuffle=False, collate_fn = add_padding)
 """
+trainloader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False, collate_fn = add_padding)
+
 # initialize model, optimizer, loss fntn
 model = CNNLSTM( cnn_input_size, lstm_input_size, hidden_size, num_layers,
                 output_size, dropout_percent).to(device)
 # use dataparallel if multi gpu
 if multi_gpu:
     model = torch.nn.DataParallel(model)
-
+"""
 #pos_weight = torch.tensor([294780851/2830876]).to(device) 
 # pos weight is ratio of not MW/ MW to give more weight to pos class - get from original df
 mw_count = (train_data["is_MW"] == 1).sum()
@@ -526,7 +538,7 @@ elif mw_count == not_mw_count:
     print("classes are balanced, using 1 as pos weight")
     pos_weight = torch.tensor([1]).to(device)
 
-
+"""
 #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 criterion = nn.BCEWithLogitsLoss()
 if multi_gpu:
@@ -537,9 +549,12 @@ else:
 # initialize list to track loss
 train_losses = []
 
+# lr scheduler - not implemented in training loop yet
+#scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, ) # min mode is default, reduce lr when monitored quantity stops decreasing
+
 # initialize autograd clipping handler
-clip_percentile = 95
-autoclip_gradient = add_autoclip_gradient_handler(model, clip_percentile, multi_gpu)
+#clip_percentile = 95
+#autoclip_gradient = add_autoclip_gradient_handler(model, clip_percentile, multi_gpu)
 
 # calculating class imbalance to set alpha
 # calculate based on full set rather than batches
@@ -550,6 +565,7 @@ train_non_mw_count = (train_data["is_MW"] == 0).sum()
 print(f"Training Set Ratio (MW/Non-MW): {train_mw_count / train_non_mw_count:.2f}")
 print(f"MW: {train_mw_count}")
 print(f"Not MW: {train_non_mw_count}")
+
 """
 # for calculating alpha dynamically according to full train set class dist.
 p_mw = train_mw_count / (train_mw_count + train_non_mw_count)
@@ -581,7 +597,9 @@ for epoch in range(num_epochs):
         if batch_mw_count == 0 or batch_not_mw_count == 0:
             continue # skip this batch if it only contains not mw or mw
         """
+        
         """
+        # set alpha and gamma for focal loss dynamically for batch
         p_mw = batch_mw_count / (batch_not_mw_count + batch_mw_count)
         alpha = 1-p_mw
         gamma = 1.5
@@ -589,6 +607,7 @@ for epoch in range(num_epochs):
         
 
         """
+        # set pos weight vals dynamically for batch
 
         if batch_mw_count != 0:
             pos_weight = torch.tensor([batch_not_mw_count/batch_mw_count]).to(device)
@@ -615,7 +634,7 @@ for epoch in range(num_epochs):
         #backprop
         loss.backward()
         # apply autograd clipping
-        autoclip_gradient()
+        #autoclip_gradient()
         """
         apply gradient clipping to lstm layer only with set value for max grad norm 
         if multi_gpu:
