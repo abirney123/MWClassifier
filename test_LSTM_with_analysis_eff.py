@@ -4,6 +4,7 @@ Created on Sat Nov 16 20:54:45 2024
 
 @author: abirn
 
+
 set up for vacc - run interactive job
 no layer norm currently
 dont forget to change:
@@ -420,7 +421,7 @@ def plot_err_over_time(results, subject):
     fig.suptitle(f"Errors Over Time: Subject {subject}")
     plt.tight_layout(rect=[0,0,1,.9])
     #plt.legend(loc="upper right")
-    plt.savefig(f"./Plots/Errors_over_time_s{subject}_11-22_strat1.png")
+    plt.savefig(f"./Plots/Errors_over_time_s{subject}_CNNLSTM_12-11_3.png")
     plt.close()
 
 
@@ -432,7 +433,7 @@ test_data = load_data(file_path)
 
 # initialize scaler
 
-scaler = joblib.load("./Models/Scaler_2024-11-22_15-51-30.pk1")
+scaler = joblib.load("./Models/Scaler_2024-12-11_11-49-22.pk1")
 # Load saved model 
 print(torch.__version__)            # Check PyTorch version
 print(torch.cuda.is_available())    # Check if PyTorch detects CUDA
@@ -442,7 +443,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device: ", device)
 
 # replace cv0 in path with str corresponding to cv run
-model_path = "./Models/LSTM_2024-11-22_15-51-30.pth"
+model_path = "./Models/LSTM_2024-12-11_11-49-22.pth"
 model = LSTMModel(input_size, hidden_size, num_layers, output_size).to(device)
 model.load_state_dict(torch.load(model_path))
 print("model loaded")
@@ -604,10 +605,9 @@ plt.figure(figsize=(15,10))
 sn.heatmap(conf_df, annot=True, cmap="coolwarm", vmin = 0, vmax = 1)
 plt.xlabel("Predicted Value")
 plt.ylabel("True Value")
-# replace fold number with fold number for model being evaluated/ best model
 plt.title("Confusion Matrix")
 
-plt.savefig(f"./Plots/LSTM_confmatrix_11-22_strat1.png")
+plt.savefig(f"./Plots/LSTM_confmatrix_CNNLSTM_12-11_3.png")
 
 precision = precision_score(flat_labs, flat_classifications)
 recall = recall_score(flat_labs, flat_classifications)
@@ -636,37 +636,3 @@ for subject in test_subjects:
     plot_err_over_time(results, subject)
     
 
-"""
-not currently working
-error:
-    Traceback (most recent call last):
-  File "/gpfs1/home/a/b/abirney/MW_Classifier/test_LSTM_with_analysis_eff.py", line 557, in <module>
-    subject_metrics = run_metrics.groupby("Subject").mean()
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/users/a/b/abirney/.conda/envs/torchGPU3/lib/python3.11/site-packages/pandas/core/frame.py", line 9183, in groupby
-    return DataFrameGroupBy(
-           ^^^^^^^^^^^^^^^^^
-  File "/users/a/b/abirney/.conda/envs/torchGPU3/lib/python3.11/site-packages/pandas/core/groupby/groupby.py", line 1329, in __init__
-    grouper, exclusions, obj = get_grouper(
-                               ^^^^^^^^^^^^
-  File "/users/a/b/abirney/.conda/envs/torchGPU3/lib/python3.11/site-packages/pandas/core/groupby/grouper.py", line 1033, in get_grouper
-    obj._check_label_or_level_ambiguity(gpr, axis=axis)
-  File "/users/a/b/abirney/.conda/envs/torchGPU3/lib/python3.11/site-packages/pandas/core/generic.py", line 1868, in _check_label_or_level_ambiguity
-    raise ValueError(msg)
-ValueError: 'Subject' is both an index level and a column label, which is ambiguous.
-
-# generate subject level metrics
-results["Pred_Label"] = results["Pred_Label"].astype(int)
-results["True_Label"] = results["True_Label"].astype(int)
-run_metrics = results.groupby(["Subject","Run"]).apply(
-    lambda df: pd.Series({
-        "Subject": df["Subject"].iloc[0],
-        "Run": df["Run"].iloc[0],
-        "Precision": precision_score(df["True_Label"], df["Pred_Label"]),
-        "Recall": recall_score(df["True_Label"], df["Pred_Label"]),
-        "F1": f1(torch.tensor(df["True_Label"].values),
-                 torch.tensor(df["Pred_Label"].values))}))
-
-subject_metrics = run_metrics.groupby("Subject").mean()
-subject_metrics.to_csv(f"./Output/Subject_metrics_11-13.csv", index=False)
-"""
