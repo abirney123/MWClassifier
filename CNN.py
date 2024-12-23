@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+Created on OCT 13 2024
+
+@author: Omar A.Awajan
+"""
+
 from ast import Try
 import pandas as pd
 import numpy as np
@@ -19,15 +26,6 @@ from collections import defaultdict, Counter
 import json
 import matplotlib.pyplot as pl
 
-
-def splitting_data_old(df : pd.DataFrame):
-    subjects = df["Subject"].value_counts().index
-    train_data = df[df["Subject"].isin(subjects[:8])]
-    test_data = df[df["Subject"].isin(subjects[8:])]
-    print(len(train_data["Subject"].value_counts().index))
-    print(len(test_data["Subject"].value_counts().index))
-
-    return train_data,test_data
 
 def splitting_data(df : pd.DataFrame):
     # written by Alaina Birney, adapted by Omar Awajan
@@ -89,48 +87,8 @@ def get_label(df :pd.DataFrame) -> int:
     return 0
 
 
-def sliding_window(df: pd.DataFrame, window_size: int = 2500, step_size: int = 250):
-    start = 0
-    #df = df.ffill()
-    num_columns = df.shape[1]-1
-    windows :list[pd.DataFrame]= []
-    labels :list[int]= []
-    mw_count :int = 0
-    f_count :int = 0
-    while start < len(df):
-        end = start + window_size
-        window = df.iloc[start:end]
-        label = get_label(window)
-        if True:
-            if label == 1:
-                mw_count += 1
-            else:
-                f_count += 1
-            labels.append(label)
-            window= window.drop(columns=['is_MW'])
-            if len(window) < window_size:
-                padding = pd.DataFrame(np.zeros((window_size - len(window), num_columns)))
-                padding.columns = window.columns
-                window = pd.concat([window, padding], ignore_index=True,axis=0)
-                windows.append(window)
-                break
-        
-            windows.append(window)
-            start += step_size
-    i :int = 0
-    print("Balance Data....")
-    while (f_count > mw_count) and (i in range(len(labels))):
-        if labels[i] == 0:
-            labels.pop(i)
-            windows.pop(i)
-            i += 1
-            f_count -= 1
-            
-    return windows,labels
-
-
 # use full dataset
-def sliding_window_old(df :pd.DataFrame, window_size :int=2500, step_size :int=250):
+def sliding_window(df :pd.DataFrame, window_size :int=2500, step_size :int=250):
     start = 0
     df = df.ffill()
     num_columns = df.shape[1]-1
@@ -217,40 +175,6 @@ def to_torch(windows :list[pd.DataFrame], labels :list[int], window_size :int=25
        'page_num', 'run_num', 'is_MW', 'sample_id', 'Subject',
        'tSample_normalized']
 '''
-def data_loader_old(filepath :str, window_size :int):
-
-    # Load dataset and drop irrelevant columns
-    print(f"Reading the dataset")
-    df :pd.DataFrame = pd.read_csv(filepath)
-    df = df.drop(columns=['Unnamed: 0', 'page_num', 'tSample', 'sample_id','tSample_normalized','run_num']) # 'run_num',
-    print(df.columns)
-    #split DataSet by Subject
-    #trainSubjects, testSubjects = lstm_VC.split_data(df)
-
-    train_data, test_data = splitting_data(df)
-    train_data.drop(columns=['Subject'],inplace=True)
-    test_data.drop(columns=['Subject'], inplace=True)
-    print(train_data.shape)
-    print(test_data.shape)
-    training_windows, training_labels = sliding_window(train_data,window_size=window_size)
-    testing_windows, testing_labels = sliding_window(test_data,window_size=window_size)
-
-    count = np.bincount(training_labels)
-    print(count)
-    weights = 1.0 / torch.tensor(count,dtype=torch.float)
-    print(weights)
-    sample_weights  = weights[training_labels]
-    print(sample_weights)
-    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-    train_dataset = MWDataSet(training_windows, training_labels)
-    test_dataset = MWDataSet(testing_windows, testing_labels)
- 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, sampler=sampler)
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-    return train_dataloader, test_dataloader
-
-
 def data_loader(filepath :str, window_size :int):
     training_windows = []
     training_labels = []
@@ -342,234 +266,6 @@ class CNNModel(nn.Module):
         return out
 
 
-#  Windows are Fully Flattened -> LSTM processes each timestep individually with Gelu
-class CNN_LSTM_1_Model(nn.Module):
-    def __init__(self, size=17500):
-        super(CNN_LSTM_1_Model, self).__init__()
-
-        # First 1D Convolution layer
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=7, padding=0, stride=7)
-        conv1_out_size = ((size - 7) // 7) + 1
-
-        # Basic LSTM Layer
-        self.lstm = nn.LSTM(
-            input_size=32,  # Matches the out_channels of the 1D-Conv which is per timestep
-            hidden_size=128,
-            num_layers=2,
-            batch_first=True
-        )
-
-        # Fully connected layers
-        self.fc1 = nn.Linear(128,512) # output is the size of the fully connected layers from the LSTM
-        self.fc2 = nn.Linear(512, 512)
-        self.fc3 = nn.Linear(512, 512)
-        self.fc4 = nn.Linear(512, 128)
-        self.fc5 = nn.Linear(128, 1)  # Output layer
-
-        self.Gelu = nn.GELU()
-
-    def forward(self, x):
-        # 1D-conv step
-        out = self.conv1(x)
-        print("After Conv1:", out.shape)  # Debug shape
-        out = self.Gelu(out)
-    
-        # Prepare for LSTM
-        out = out.permute(0, 2, 1)
-        print("After Permute:", out.shape)  # Debug shape
-    
-        # LSTM
-        out, _ = self.lstm(out)
-        print("After LSTM:", out.shape)  # Debug shape
-        out = out[:, -1, :]  # Last hidden state
-    
-        # Fully connected layers
-        out = self.fc1(out)
-        out = self.Gelu(out)
-        out = self.fc2(out)
-        out = self.Gelu(out)
-        out = self.fc3(out)
-        out = self.Gelu(out)
-        out = self.fc4(out)
-        out = self.Gelu(out)
-        out = self.fc5(out)
-        print("Output Shape:", out.shape)  # Debug shape
-
-        return out
-        
-'''
-Windows are Fully Flattened -> LSTM processes each timestep individually
-each timestep is labeled
-LSTM model is bidirectional
-
-1. full window flattened
-2. each timestep feature map is produced from the 1D-conv 1x6 to 32 outputchannel
-3. each 32 is sent to the LSTM model with its corresponding label
-'''
-class CNN_Bidirectional_LSTM_Model(nn.Module):
-    def __init__(self, size=17500, output_dim=1):
-        super(CNN_Bidirectional_LSTM_Model, self).__init__()
-
-        # First 1D Convolution layer
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=7, padding=0, stride=7)
-        conv1_out_size = ((size - 7) // 7) + 1
-
-        # Bidirectional LSTM Layer
-        self.lstm = nn.LSTM(
-            input_size=32,        # Matches the out_channels of the 1D-Conv
-            hidden_size=128,      # Hidden size per direction
-            num_layers=2,         # Number of LSTM layers
-            batch_first=True,
-            bidirectional=True    # Makes the LSTM bidirectional
-        )
-
-        # Fully connected layer to output a label for each timestep
-        self.fc = nn.Linear(128 * 2, output_dim)  # Multiply by 2 for bidirectional hidden size
-
-        self.Gelu = nn.GELU()
-
-    def forward(self, x):
-        # Pass through convolutional layer
-        out = self.conv1(x)  # Shape: (batch_size, 32, conv1_out_size)
-        out = self.Gelu(out)
-
-        # Prepare for LSTM: (batch_size, seq_len, input_size)
-        out = out.permute(0, 2, 1)  # Shape: (batch_size, seq_len, 32)
-
-        # Pass through Bidirectional LSTM
-        out, _ = self.lstm(out)  # Output: (batch_size, seq_len, hidden_size * 2)
-
-        # Pass through Fully Connected layer for timestep-wise output
-        out = self.fc(out)  # Shape: (batch_size, seq_len, output_dim)
-
-        return out
-
-
-
-#  Windows are Fully Flattened -> LSTM processes each timestep individually with Gelu
-class ConvLSTMModel(nn.Module):
-    def __init__(self, size=17500, output_dim=1):
-        super(ConvLSTMModel, self).__init__()
-
-        # First 1D Convolution layer
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=6, padding=0, stride=6)
-        conv1_out_size = ((size - 7) // 7) + 1
-        # Second 1D Convolutional layer
-        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=6, stride=6, padding=0)
-        conv2_out_size = ((conv1_out_size - 6) // 6) + 1
-        
-        # Third 1D Convolutional layer
-        #self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=0, stride=2)
-        #conv3_out_size = ((conv2_out_size - 3) // 2) + 1
-        # Fully connected layers
-          
-        # LSTM Model
-        self.lstm = nn.LSTM(
-            input_size=64,
-            hidden_size=128,
-            num_layers=5,
-            batch_first=True
-        )
-
-        # Fully connected layer to output a label for each timestep
-        self.fc1 = nn.Linear(128,512)
-        self.fc2 = nn.Linear(512, 512)
-        self.fc3 = nn.Linear(512, 512)
-        self.fc4 = nn.Linear(512, 128)
-        self.fc5 = nn.Linear(128, 1)  # Output layer
-
-        self.Gelu = nn.GELU()
-
-
-    def forward(self, x):
-        out = self.conv1(x)
-        out = self.Gelu(out)
-        
-        out = self.conv2(out)
-        out = self.Gelu(out)
-        out = out.permute(0, 2, 1)
-    
-        # LSTM
-        out, _ = self.lstm(out)
-        out = out[:, -1, :]  # Last hidden state
-
-
-
-        # Forward pass through fully connected layers
-        out = self.fc1(out)
-        out =self.Gelu(out)
-        out = self.fc2(out)
-        out = self.Gelu(out)
-        out = self.fc3(out)
-        out = self.Gelu(out)
-        out = self.fc4(out)
-        out = self.Gelu(out)
-        out = self.fc5(out)
-
-        return out
-
-
-class ConvLSTMModelWithAttention(nn.Module):
-    def __init__(self, size=17500, output_dim=1):
-        super(ConvLSTMModelWithAttention, self).__init__()
-
-        # Convolutional layers
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=6, stride=6, padding=0)
-        conv1_out_size = ((size - 6) // 6) + 1
-        #self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=6, stride=6, padding=0)
-        #conv2_out_size = ((conv1_out_size - 6) // 6) + 1
-
-        # LSTM
-        self.lstm = nn.LSTM(
-            input_size=32,
-            hidden_size=128,
-            num_layers=4,
-            batch_first=True
-        )
-
-        # Attention mechanism parameters
-        self.attention_weights = nn.Linear(128, 1, bias=False)
-
-        # Fully connected layers
-        self.fc1 = nn.Linear(128, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, 128)
-        self.fc4 = nn.Linear(128, output_dim)
-
-        self.Gelu = nn.GELU()
-
-    def forward(self, x):
-        # Convolutional layers
-        out = self.conv1(x)
-        out = self.Gelu(out)
-
-        #out = self.conv2(out)
-        #out = self.Gelu(out)
-
-        # Prepare for LSTM
-        out = out.permute(0, 2, 1)
-
-        # LSTM
-        lstm_out, _ = self.lstm(out)
-
-        # Attention mechanism
-        attention_scores = self.attention_weights(lstm_out)
-        attention_scores = torch.softmax(attention_scores, dim=1)
-
-        # Weighted sum of LSTM outputs
-        context_vector = torch.sum(attention_scores * lstm_out, dim=1)
-
-        # Fully connected layers
-        out = self.fc1(context_vector)
-        out = self.Gelu(out)
-        out = self.fc2(out)
-        out = self.Gelu(out)
-        out = self.fc3(out)
-        out = self.Gelu(out)
-        out = self.fc4(out)
-
-        return out
-
 
 def CNN() -> None:
     # Select GPU for training and testing if available
@@ -580,7 +276,7 @@ def CNN() -> None:
     if True:
         window_size = 2500
         # Initialize model, loss, optimizer, and epochs
-        model = ConvLSTMModelWithAttention(size=window_size*6)
+        model = CNN(size=window_size*6)
         model.to(hw_device)
         criterion = nn.BCEWithLogitsLoss()
         optimizer = Adam(model.parameters())
