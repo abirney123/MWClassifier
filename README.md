@@ -22,4 +22,4 @@ extractor.
 14. train_CNN_LSTM_Att.py: the program for training the directional CNN-LSTM model extended with the use of attention mechanisms on both the CNN and LSTM models.
 15. test_CNN_LSTM_Att.py: the program for evaluating the directional CNN-LSTM model extended with the use of attention mechanisms on both the CNN and LSTM models.
 
-A full report regarding this project can be found within the file "Mind_Wandering_Deep_Learning_Classifier_Extended": 
+A full report regarding this project can be found within the file "Mind_Wandering_Deep_Learning_Classifier_Extended.pdf": https://github.com/abirney123/MWClassifier/blob/471b25e44a299e988b8675bb857b305a79004ed4/Mind_Wandering_Deep_Learning_Classifier_Extended.pdf 
